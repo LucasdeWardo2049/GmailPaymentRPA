@@ -382,6 +382,7 @@ class LoginPage(QWidget):
 
 
 class CsvPage(QWidget):
+    back_clicked = Signal()
     select_csv_clicked = Signal()
     save_csv_clicked = Signal()
     select_all_valid_clicked = Signal()
@@ -398,12 +399,14 @@ class CsvPage(QWidget):
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
 
         self.select_csv_button = QPushButton("Carregar CSV")
+        self.back_button = QPushButton("Voltar para Login")
         self.save_csv_button = QPushButton("Salvar CSV editado")
         self.select_all_valid_button = QPushButton("Selecionar validos")
         self.clear_selection_button = QPushButton("Limpar selecao")
         self.next_button = QPushButton("Proximo")
         self.next_button.setEnabled(False)
         self.select_csv_button.setToolTip("Importar arquivo CSV")
+        self.back_button.setToolTip("Retornar para a Tela 1 (Login)")
         self.save_csv_button.setToolTip("Salvar as alteracoes em um novo CSV")
         self.select_all_valid_button.setToolTip("Marcar todos os registros validos")
         self.clear_selection_button.setToolTip("Desmarcar todos os registros")
@@ -449,6 +452,7 @@ class CsvPage(QWidget):
         self.rejected_box.setAccessibleName("Lista de linhas invalidas")
 
         top_buttons = QHBoxLayout()
+        top_buttons.addWidget(self.back_button)
         top_buttons.addWidget(self.select_csv_button)
         top_buttons.addWidget(self.save_csv_button)
         top_buttons.addWidget(self.select_all_valid_button)
@@ -465,6 +469,7 @@ class CsvPage(QWidget):
         layout.addWidget(QLabel("Linhas invalidas"))
         layout.addWidget(self.rejected_box)
 
+        self.back_button.clicked.connect(self.back_clicked.emit)
         self.select_csv_button.clicked.connect(self.select_csv_clicked.emit)
         self.save_csv_button.clicked.connect(self.save_csv_clicked.emit)
         self.select_all_valid_button.clicked.connect(self.select_all_valid_clicked.emit)
@@ -1397,6 +1402,7 @@ class MainWindow(QMainWindow):
         self.login_page.validate_clicked.connect(self._validate_session)
         self.login_page.next_clicked.connect(self._go_to_csv)
 
+        self.csv_page.back_clicked.connect(self._back_to_login)
         self.csv_page.select_csv_clicked.connect(self._select_csv)
         self.csv_page.save_csv_clicked.connect(self._save_csv)
         self.csv_page.select_all_valid_clicked.connect(self._select_all_valid_csv)
@@ -1460,6 +1466,10 @@ class MainWindow(QMainWindow):
             return
         self.statusBar().showMessage("Tela 2 aberta: carregue e revise o CSV")
         self.stack.setCurrentWidget(self.csv_page)
+
+    def _back_to_login(self) -> None:
+        self.statusBar().showMessage("Retornou para Tela 1")
+        self.stack.setCurrentWidget(self.login_page)
 
     def _select_csv(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(

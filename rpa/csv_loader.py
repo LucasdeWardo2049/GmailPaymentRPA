@@ -131,6 +131,8 @@ def load_client_records(csv_path: str) -> tuple[list[ClientRecord], list[str]]:
 
         records: list[ClientRecord] = []
         rejected_rows: list[str] = []
+        used_ids: set[str] = set()
+        next_auto_id = 1
 
         for line_number, row in enumerate(reader, start=2):
             row_id = normalize_text(row.get("id"))
@@ -144,8 +146,17 @@ def load_client_records(csv_path: str) -> tuple[list[ClientRecord], list[str]]:
 
             reasons: list[str] = []
             if row_id is None:
-                reasons.append("id invalido")
-                row_id = f"linha-{line_number}"
+                while str(next_auto_id) in used_ids:
+                    next_auto_id += 1
+                row_id = str(next_auto_id)
+                used_ids.add(row_id)
+                next_auto_id += 1
+            else:
+                used_ids.add(row_id)
+                if row_id.isdigit():
+                    numeric_id = int(row_id)
+                    if numeric_id >= next_auto_id:
+                        next_auto_id = numeric_id + 1
 
             reasons.extend(validate_record_fields(email, status, valor))
             if valor_error:

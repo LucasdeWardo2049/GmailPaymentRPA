@@ -43,21 +43,22 @@ def test_load_client_records_normalizes_mixed_date_formats(tmp_path: Path) -> No
     assert records[0].ultima_cobranca == "2026-04-07"
 
 
-def test_load_client_records_rejects_invalid_id(tmp_path: Path) -> None:
+def test_load_client_records_autoincrements_missing_id(tmp_path: Path) -> None:
     csv_path = _write_csv(
         tmp_path,
         "id,cliente_nome,email,status,valor,vencimento,ultima_cobranca\n"
+        "1,Joao,joao@example.com,ABERTO,200.00,2026-04-01,\n"
+        "2,Ana,ana@example.com,ABERTO,200.00,2026-04-01,\n"
         ",Maria,maria@example.com,ABERTO,200.00,2026-04-01,\n",
     )
 
     records, rejected_rows = load_client_records(csv_path)
 
-    assert len(records) == 1
-    assert len(rejected_rows) == 1
-    assert "id invalido" in rejected_rows[0]
-    assert records[0].id == "linha-2"
-    assert records[0].is_valid is False
-    assert "id invalido" in records[0].observacao_erro
+    assert len(records) == 3
+    assert rejected_rows == []
+    assert records[2].id == "3"
+    assert records[2].is_valid is True
+    assert records[2].observacao_erro == ""
 
 
 def test_load_client_records_rejects_invalid_email(tmp_path: Path) -> None:
