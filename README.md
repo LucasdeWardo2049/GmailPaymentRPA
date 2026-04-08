@@ -23,7 +23,7 @@ python app.py
 ## Arquivo esperado (CSV ou XLSX)
 Cabecalho:
 
-id,cliente_nome,email,status,valor,vencimento,ultima_cobranca
+id,cliente_nome,email,status,valor,vencimento,ultima_cobranca(opcional)
 
 Observacao: no import, a coluna `status` pode estar ausente ou vazia. Nesses casos, o sistema preenche
 automaticamente como `ABERTO` (mantendo o campo editavel na Tela 2).
