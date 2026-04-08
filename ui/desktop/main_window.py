@@ -35,7 +35,7 @@ from rpa.csv_loader import (
     EXPECTED_COLUMNS,
     format_valor,
     is_valid_email,
-    load_client_records,
+    load_client_records_from_file,
     normalize_status,
     normalize_text,
     parse_valor,
@@ -395,17 +395,17 @@ class CsvPage(QWidget):
         super().__init__()
         self._updating_table = False
 
-        title = QLabel("Tela 2/3 - CSV Management")
+        title = QLabel("Tela 2/3 - Importacao e Revisao")
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
 
-        self.select_csv_button = QPushButton("Carregar CSV")
+        self.select_csv_button = QPushButton("Carregar arquivo")
         self.back_button = QPushButton("Voltar para Login")
         self.save_csv_button = QPushButton("Salvar CSV editado")
         self.select_all_valid_button = QPushButton("Selecionar validos")
         self.clear_selection_button = QPushButton("Limpar selecao")
         self.next_button = QPushButton("Proximo")
         self.next_button.setEnabled(False)
-        self.select_csv_button.setToolTip("Importar arquivo CSV")
+        self.select_csv_button.setToolTip("Importar arquivo CSV ou XLSX")
         self.back_button.setToolTip("Retornar para a Tela 1 (Login)")
         self.save_csv_button.setToolTip("Salvar as alteracoes em um novo CSV")
         self.select_all_valid_button.setToolTip("Marcar todos os registros validos")
@@ -442,7 +442,7 @@ class CsvPage(QWidget):
             | QAbstractItemView.EditKeyPressed
         )
         self.table.setToolTip("Duplo clique em cliente_nome, email, status ou valor para editar")
-        self.table.setAccessibleName("Tabela de registros do CSV")
+        self.table.setAccessibleName("Tabela de registros importados")
 
         self.rejected_box = QPlainTextEdit()
         self.rejected_box.setReadOnly(True)
@@ -481,7 +481,7 @@ class CsvPage(QWidget):
         self.selected_file_label.setText(f"Arquivo: {path}")
 
     def set_counts(self, total: int, valid: int, selected: int) -> None:
-        self.count_label.setText(f"Resumo CSV - Total: {total} | Validos: {valid} | Selecionados: {selected}")
+        self.count_label.setText(f"Resumo - Total: {total} | Validos: {valid} | Selecionados: {selected}")
 
     def set_next_enabled(self, enabled: bool) -> None:
         self.next_button.setEnabled(enabled)
@@ -1464,7 +1464,7 @@ class MainWindow(QMainWindow):
         if not self.logged_in:
             QMessageBox.warning(self, "Sessao invalida", "Valide a sessao Gmail antes de avancar.")
             return
-        self.statusBar().showMessage("Tela 2 aberta: carregue e revise o CSV")
+        self.statusBar().showMessage("Tela 2 aberta: carregue e revise o arquivo")
         self.stack.setCurrentWidget(self.csv_page)
 
     def _back_to_login(self) -> None:
@@ -1474,17 +1474,17 @@ class MainWindow(QMainWindow):
     def _select_csv(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Selecionar CSV",
+            "Selecionar arquivo de clientes",
             str(Path.home()),
-            "CSV (*.csv)",
+            "Arquivos suportados (*.csv *.xlsx);;CSV (*.csv);;Excel (*.xlsx)",
         )
         if not file_path:
             return
 
         try:
-            records, rejected_rows = load_client_records(file_path)
+            records, rejected_rows = load_client_records_from_file(file_path)
         except Exception as error:  # noqa: BLE001
-            QMessageBox.critical(self, "CSV invalido", str(error))
+            QMessageBox.critical(self, "Arquivo invalido", str(error))
             return
 
         self.records = records
@@ -1496,7 +1496,7 @@ class MainWindow(QMainWindow):
         self.csv_page.set_rejections(rejected_rows)
 
         if not records:
-            QMessageBox.warning(self, "CSV vazio", "Nao foi encontrado nenhum registro no CSV.")
+            QMessageBox.warning(self, "Arquivo vazio", "Nao foi encontrado nenhum registro no arquivo.")
 
         if rejected_rows:
             QMessageBox.information(
@@ -1506,11 +1506,11 @@ class MainWindow(QMainWindow):
             )
 
         self._refresh_csv_state()
-        self.statusBar().showMessage(f"CSV carregado: {len(records)} registro(s)")
+        self.statusBar().showMessage(f"Arquivo carregado: {len(records)} registro(s)")
 
     def _save_csv(self) -> None:
         if not self.records:
-            QMessageBox.warning(self, "Sem dados", "Carregue um CSV antes de salvar.")
+            QMessageBox.warning(self, "Sem dados", "Carregue um arquivo antes de salvar.")
             return
 
         default_name = "clientes_editado.csv"

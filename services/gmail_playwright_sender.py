@@ -353,7 +353,7 @@ class GmailPlaywrightSender:
                 page.keyboard.type(email, delay=20)
             except Exception:
                 return False
-
+# fallback para pressionar Enter e tentar ativar o campo, caso a digitação direta falhe
         try:
             page.keyboard.press("Enter")
         except Exception:
@@ -503,7 +503,7 @@ class GmailPlaywrightSender:
                 continue
 
         return False
-
+#colocar o foco no campo e tentar enviar com Ctrl+Enter, caso o clique direto no botão de Send falhe
     def _send_compose(self, compose_dialog: Locator, page: Page) -> None:
         clicked = self._try_click_first_existing(compose_dialog, self.SEND_SELECTORS)
 
