@@ -100,6 +100,10 @@ QTableWidget {
     selection-color: #ffffff;
 }
 
+QTableWidget::item {
+    color: #e2e8f0;
+}
+
 QTableWidget::item:selected {
     background-color: #3b82f6;
     color: #ffffff;
@@ -137,6 +141,14 @@ QLabel#statusLabel {
     color: #60a5fa;
 }
 """
+
+# Semantic colors for Screen 2 row states.
+CSV_ROW_COLORS = {
+    "invalid": (QColor("#b33535"), QColor("#ffffff")),
+    "open": (QColor("#5a4316"), QColor("#f8e8c2")),
+    "closed": (QColor("#334155"), QColor("#e2e8f0")),
+    "default": (QColor("#2b2f38"), QColor("#e2e8f0")),
+}
 
 
 class WorkerThread(QThread):
@@ -566,17 +578,13 @@ class CsvPage(QWidget):
 
     def _apply_row_colors(self, row_index: int, record: ClientRecord) -> None:
         if not record.is_valid:
-            background = QColor("#b33535")
-            foreground = QColor("#ffffff")
+            background, foreground = CSV_ROW_COLORS["invalid"]
         elif record.status == "ABERTO":
-            background = QColor("#ffe3b2")
-            foreground = QColor("#1f1f1f")
+            background, foreground = CSV_ROW_COLORS["open"]
         elif record.status in {"PAGO", "CANCELADO"}:
-            background = QColor("#efefef")
-            foreground = QColor("#1f1f1f")
+            background, foreground = CSV_ROW_COLORS["closed"]
         else:
-            background = QColor("#ffffff")
-            foreground = QColor("#1f1f1f")
+            background, foreground = CSV_ROW_COLORS["default"]
 
         for column_index in range(self.table.columnCount()):
             item = self.table.item(row_index, column_index)

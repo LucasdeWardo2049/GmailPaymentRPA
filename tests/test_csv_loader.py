@@ -226,3 +226,43 @@ def test_load_client_records_from_file_rejects_unsupported_extension(tmp_path: P
 
     with pytest.raises(ValueError, match="Formato de arquivo nao suportado"):
         load_client_records_from_file(str(txt_path))
+
+
+def test_load_client_records_from_xlsx_rejects_corrupted_zip(tmp_path: Path) -> None:
+    xlsx_path = tmp_path / "corrompido.xlsx"
+    xlsx_path.write_bytes(b"PK\x03\x04arquivo-incompleto")
+
+    with pytest.raises(ValueError, match="XLSX invalido: arquivo corrompido ou formato incorreto"):
+        load_client_records_from_xlsx(str(xlsx_path))
+
+
+def test_load_client_records_from_xlsx_rejects_non_zip_content(tmp_path: Path) -> None:
+    xlsx_path = tmp_path / "falso.xlsx"
+    xlsx_path.write_text("id,cliente_nome,email", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="XLSX invalido"):
+        load_client_records_from_xlsx(str(xlsx_path))
+
+
+def test_load_client_records_from_file_fallbacks_to_csv_when_xlsx_is_text(tmp_path: Path) -> None:
+    fake_xlsx = tmp_path / "clientes.xlsx"
+    fake_xlsx.write_text(
+        "id,cliente_nome,email,status,valor,vencimento,ultima_cobranca\n"
+        "1,Joao,joao@example.com,ABERTO,199.90,2026-04-01,\n",
+        encoding="utf-8",
+    )
+
+    records, rejected = load_client_records_from_file(str(fake_xlsx))
+
+    assert len(records) == 1
+    assert rejected == []
+    assert records[0].id == "1"
+    assert records[0].status == "ABERTO"
+
+
+def test_load_client_records_from_file_keeps_xlsx_error_for_non_csv_garbage(tmp_path: Path) -> None:
+    fake_xlsx = tmp_path / "clientes.xlsx"
+    fake_xlsx.write_bytes(b"\x00\x01\x02\x03")
+
+    with pytest.raises(ValueError, match="XLSX invalido"):
+        load_client_records_from_file(str(fake_xlsx))

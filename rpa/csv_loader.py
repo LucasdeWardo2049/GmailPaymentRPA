@@ -3,6 +3,7 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, Mapping
+from zipfile import BadZipFile
 
 from models.client_record import ClientRecord
 
@@ -283,6 +284,7 @@ def load_client_records_from_xlsx(
 ) -> tuple[list[ClientRecord], list[str]]:
     try:
         from openpyxl import load_workbook
+        from openpyxl.utils.exceptions import InvalidFileException
     except ImportError as error:  # pragma: no cover - protegido por requirements
         raise ImportError("Dependencia openpyxl nao encontrada. Instale openpyxl>=3.1.0.") from error
 
@@ -290,7 +292,17 @@ def load_client_records_from_xlsx(
     if not path.exists():
         raise FileNotFoundError(f"Arquivo nao encontrado: {xlsx_path}")
 
-    workbook = load_workbook(path, data_only=True, read_only=True)
+    try:
+        workbook = load_workbook(path, data_only=True, read_only=True)
+    except BadZipFile as error:
+        raise ValueError(
+            "XLSX invalido: arquivo corrompido ou formato incorreto (nao e um .xlsx valido)."
+        ) from error
+    except InvalidFileException as error:
+        raise ValueError(
+            "XLSX invalido: formato de planilha nao suportado. Use um arquivo .xlsx valido."
+        ) from error
+
     try:
         if sheet_name is None:
             worksheet = workbook.active
@@ -337,7 +349,14 @@ def load_client_records_from_file(
         return load_client_records(file_path)
 
     if extension == ".xlsx":
-        return load_client_records_from_xlsx(file_path, sheet_name=sheet_name)
+        try:
+            return load_client_records_from_xlsx(file_path, sheet_name=sheet_name)
+        except ValueError as xlsx_error:
+            # Fallback: some users rename CSV text files to .xlsx by mistake.
+            try:
+                return load_client_records(file_path)
+            except Exception:
+                raise xlsx_error
 
     raise ValueError("Formato de arquivo nao suportado. Use .csv ou .xlsx.")
 
