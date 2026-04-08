@@ -23,7 +23,7 @@ python app.py
 ## Arquivo esperado (CSV ou XLSX)
 Cabecalho:
 
-id,cliente_nome,email,status,valor,vencimento,ultima_cobranca
+id,cliente_nome,email,status,valor,vencimento,ultima_cobranca(opcional)
 
 ## Fluxo
 1. Na Tela 1, clique em "Abrir Gmail e fazer login" (opcionalmente, abra "Configurar diretorio de perfil" para ajustar o Playwright).
