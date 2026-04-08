@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QStackedWidget,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -590,6 +591,9 @@ class SendPage(QWidget):
 
     PRESET_MANUAL = "manual"
     PRESET_FRIENDLY = "friendly"
+    PRESET_SECOND_NOTICE = "second_notice"
+    PRESET_FINAL_NOTICE = "final_notice"
+    PRESET_LAST_CALL = "last_call"
 
     def __init__(self) -> None:
         super().__init__()
@@ -597,6 +601,7 @@ class SendPage(QWidget):
         self._preview_records: list[ClientRecord] = []
         self._updating_table = False
         self._is_busy = False
+        self._logs_tab_visible = False
         self._preset_templates: dict[str, tuple[str, str]] = {
             self.PRESET_FRIENDLY: (
                 "Lembrete amigavel - {cliente_nome} (ID {record_id})",
@@ -607,6 +612,36 @@ class SendPage(QWidget):
                     "Dias em atraso: {dias_atraso}.\n\n"
                     "Se ja efetuou o pagamento, desconsidere esta mensagem.\n"
                     "Obrigado."
+                ),
+            ),
+            self.PRESET_SECOND_NOTICE: (
+                "2o aviso: pendencia em aberto para {cliente_nome}",
+                (
+                    "Ola {cliente_nome},\n\n"
+                    "Este e nosso 2o aviso sobre a pendencia de R$ {valor}.\n"
+                    "Vencimento original: {vencimento}.\n"
+                    "Atraso atual: {dias_atraso} dia(s).\n\n"
+                    "Se precisar de apoio para regularizacao, responda este contato."
+                ),
+            ),
+            self.PRESET_FINAL_NOTICE: (
+                "Aviso final de cobranca - {cliente_nome}",
+                (
+                    "Prezado(a) {cliente_nome},\n\n"
+                    "Ate o momento nao identificamos a regularizacao do valor de R$ {valor}.\n"
+                    "Vencimento: {vencimento}.\n"
+                    "Atraso: {dias_atraso} dia(s).\n\n"
+                    "Solicitamos retorno imediato para evitar escalonamento."
+                ),
+            ),
+            self.PRESET_LAST_CALL: (
+                "Ultima tentativa de contato - ID {record_id}",
+                (
+                    "Ola {cliente_nome},\n\n"
+                    "Esta e a ultima tentativa de contato sobre o titulo em aberto de R$ {valor}.\n"
+                    "Vencimento: {vencimento}.\n"
+                    "Dias em atraso: {dias_atraso}.\n\n"
+                    "Caso ja tenha pago, desconsidere e nos informe para atualizacao."
                 ),
             ),
         }
@@ -666,6 +701,9 @@ class SendPage(QWidget):
         self.template_preset_combo = QComboBox()
         self.template_preset_combo.addItem("Template manual", self.PRESET_MANUAL)
         self.template_preset_combo.addItem("Cobranca amigavel", self.PRESET_FRIENDLY)
+        self.template_preset_combo.addItem("2o aviso", self.PRESET_SECOND_NOTICE)
+        self.template_preset_combo.addItem("Aviso final", self.PRESET_FINAL_NOTICE)
+        self.template_preset_combo.addItem("Ultima tentativa", self.PRESET_LAST_CALL)
         self.template_preset_combo.setToolTip("Escolha um preset para preencher assunto/corpo template")
 
         self.template_subject_edit = QLineEdit()
@@ -678,11 +716,11 @@ class SendPage(QWidget):
         self.template_body_edit.setToolTip("Aceita placeholders por cliente")
         self.template_body_edit.setAccessibleName("Campo corpo template por cliente")
 
-        placeholders_text = ", ".join(f"{{{name}}}" for name in SUPPORTED_PLACEHOLDERS)
-        self.placeholder_help_label = QLabel(f"Placeholders disponiveis: {placeholders_text}")
-        self.placeholder_help_label.setWordWrap(True)
+        self.help_placeholders_button = QPushButton("Ver Variaveis Disponiveis { }")
+        self.help_placeholders_button.setToolTip("Abrir lista de placeholders em modal")
 
         placeholder_buttons_layout = QHBoxLayout()
+        placeholder_buttons_layout.addWidget(QLabel("Inserir variavel:"))
         for name in SUPPORTED_PLACEHOLDERS:
             token = f"{{{name}}}"
             button = QPushButton(token)
@@ -690,6 +728,7 @@ class SendPage(QWidget):
             button.clicked.connect(lambda _, value=token: self._insert_placeholder(value))
             placeholder_buttons_layout.addWidget(button)
         placeholder_buttons_layout.addStretch()
+        placeholder_buttons_layout.addWidget(self.help_placeholders_button)
 
         self.preview_client_combo = QComboBox()
         self.preview_client_combo.setToolTip("Selecione um cliente elegivel para visualizacao")
@@ -708,14 +747,13 @@ class SendPage(QWidget):
 
         self.logs_box = QPlainTextEdit()
         self.logs_box.setReadOnly(True)
-        self.logs_box.setMaximumHeight(190)
         self.logs_box.setPlaceholderText("Logs de envio")
         self.logs_box.setAccessibleName("Area de logs de envio")
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(False)
+        self.progress_bar.setVisible(True)
 
         top_buttons = QHBoxLayout()
         top_buttons.addWidget(self.back_button)
@@ -724,6 +762,14 @@ class SendPage(QWidget):
         top_buttons.addStretch()
         top_buttons.addWidget(self.per_client_checkbox)
         top_buttons.addWidget(self.send_button)
+
+        top_section = QWidget()
+        top_section_layout = QVBoxLayout(top_section)
+        top_section_layout.setContentsMargins(0, 0, 0, 0)
+        top_section_layout.setSpacing(8)
+        top_section_layout.addLayout(top_buttons)
+        top_section_layout.addWidget(self.selected_label)
+        top_section_layout.addWidget(self.table, 1)
 
         self.global_section = QWidget()
         global_layout = QVBoxLayout(self.global_section)
@@ -749,34 +795,53 @@ class SendPage(QWidget):
         template_form.addRow("Assunto template", self.template_subject_edit)
         template_form.addRow("Corpo template", self.template_body_edit)
 
+        per_client_layout.addWidget(per_client_title)
+        per_client_layout.addLayout(template_form)
+        per_client_layout.addLayout(placeholder_buttons_layout)
+        per_client_layout.addWidget(QLabel("Use o botao de ajuda para ver placeholders e exemplos."))
+        per_client_layout.addStretch()
+
+        self.editor_tab = QWidget()
+        editor_tab_layout = QVBoxLayout(self.editor_tab)
+        editor_tab_layout.setContentsMargins(8, 8, 8, 8)
+        editor_tab_layout.setSpacing(10)
+        editor_tab_layout.addWidget(self.global_section)
+        editor_tab_layout.addWidget(self.per_client_section)
+        editor_tab_layout.addStretch()
+
+        self.preview_tab = QWidget()
+        preview_tab_layout = QVBoxLayout(self.preview_tab)
+        preview_tab_layout.setContentsMargins(8, 8, 8, 8)
+        preview_tab_layout.setSpacing(10)
         preview_form = QFormLayout()
         preview_form.addRow("Cliente de preview", self.preview_client_combo)
         preview_form.addRow("Assunto renderizado", self.preview_subject_view)
         preview_form.addRow("Corpo renderizado", self.preview_body_view)
+        preview_tab_layout.addLayout(preview_form)
+        preview_tab_layout.addWidget(self.preview_status_label)
+        preview_tab_layout.addStretch()
 
-        per_client_layout.addWidget(per_client_title)
-        per_client_layout.addLayout(template_form)
-        per_client_layout.addWidget(self.placeholder_help_label)
-        per_client_layout.addLayout(placeholder_buttons_layout)
-        per_client_layout.addWidget(QLabel("Preview por cliente elegivel"))
-        per_client_layout.addLayout(preview_form)
-        per_client_layout.addWidget(self.preview_status_label)
+        self.logs_tab = QWidget()
+        logs_tab_layout = QVBoxLayout(self.logs_tab)
+        logs_tab_layout.setContentsMargins(8, 8, 8, 8)
+        logs_tab_layout.setSpacing(10)
+        logs_tab_layout.addWidget(self.logs_box)
+        logs_tab_layout.addWidget(self.progress_bar)
+
+        self.bottom_tabs = QTabWidget()
+        self.bottom_tabs.addTab(self.editor_tab, "Editor de Mensagem")
+        self.bottom_tabs.addTab(self.preview_tab, "Preview por Cliente")
 
         layout = QVBoxLayout(self)
         layout.addWidget(title)
-        layout.addLayout(top_buttons)
-        layout.addWidget(self.selected_label)
-        layout.addWidget(self.table)
-        layout.addWidget(self.global_section)
-        layout.addWidget(self.per_client_section)
-        layout.addWidget(QLabel("Logs"))
-        layout.addWidget(self.logs_box)
-        layout.addWidget(self.progress_bar)
+        layout.addWidget(top_section, 1)
+        layout.addWidget(self.bottom_tabs, 1)
 
         self.back_button.clicked.connect(self.back_clicked.emit)
         self.send_button.clicked.connect(self._emit_send)
         self.select_all_button.clicked.connect(self.select_all_eligible_clicked.emit)
         self.clear_selection_button.clicked.connect(self.clear_selection_clicked.emit)
+        self.help_placeholders_button.clicked.connect(self._show_placeholders_help)
         self.subject_edit.textChanged.connect(lambda _: self._emit_active_message_changed())
         self.body_edit.textChanged.connect(lambda: self._emit_active_message_changed())
         self.template_subject_edit.textChanged.connect(lambda _: self._on_template_changed())
@@ -890,10 +955,12 @@ class SendPage(QWidget):
         self._update_preview()
 
     def append_log(self, text: str) -> None:
+        self._ensure_logs_tab_visible(select_tab=False)
         self.logs_box.appendPlainText(text)
 
     def clear_logs(self) -> None:
         self.logs_box.clear()
+        self._hide_logs_tab()
 
     def set_send_enabled(self, enabled: bool) -> None:
         self.send_button.setEnabled(enabled and not self._is_busy)
@@ -908,7 +975,11 @@ class SendPage(QWidget):
         self.table.setEnabled(not busy)
         self.global_section.setEnabled(not busy)
         self.per_client_section.setEnabled(not busy)
-        self.progress_bar.setVisible(busy)
+        self.help_placeholders_button.setEnabled(not busy)
+
+        if busy:
+            self._ensure_logs_tab_visible(select_tab=True)
+
         if busy:
             self.progress_bar.setRange(0, 0)
         else:
@@ -974,8 +1045,8 @@ class SendPage(QWidget):
             self._apply_skip_style(row_index)
 
     def _apply_eligible_style(self, row_index: int) -> None:
-        background = QColor("#f2f4f7")
-        foreground = QColor("#1f1f1f")
+        background = QColor("#2b2f38")
+        foreground = QColor("#e2e8f0")
 
         for column_index in range(self.table.columnCount()):
             item = self.table.item(row_index, column_index)
@@ -985,8 +1056,8 @@ class SendPage(QWidget):
             item.setForeground(foreground)
 
     def _apply_skip_style(self, row_index: int) -> None:
-        background = QColor("#d9dde3")
-        foreground = QColor("#454b54")
+        background = QColor("#3a3f4a")
+        foreground = QColor("#cbd5e1")
 
         for column_index in range(self.table.columnCount()):
             item = self.table.item(row_index, column_index)
@@ -1012,6 +1083,7 @@ class SendPage(QWidget):
 
     def _on_mode_toggled(self, _: bool) -> None:
         self._update_mode_ui()
+        self.bottom_tabs.setCurrentWidget(self.editor_tab)
         self._emit_active_message_changed()
         self._refresh_preview_candidates()
         self._update_preview()
@@ -1072,6 +1144,44 @@ class SendPage(QWidget):
         cursor.insertText(placeholder)
         self.template_body_edit.setTextCursor(cursor)
         self.template_body_edit.setFocus()
+
+    def _show_placeholders_help(self) -> None:
+        placeholders = "\n".join(f"- {{{name}}}" for name in SUPPORTED_PLACEHOLDERS)
+        QMessageBox.information(
+            self,
+            "Variaveis Disponiveis",
+            (
+                "Use placeholders no modo por cliente para personalizar assunto e corpo.\n\n"
+                f"Disponiveis:\n{placeholders}\n\n"
+                "Exemplo de assunto:\n"
+                "Aviso para {cliente_nome} - atraso de {dias_atraso} dia(s)\n\n"
+                "Exemplo de corpo:\n"
+                "Ola {cliente_nome}, titulo de R$ {valor} com vencimento em {vencimento}."
+            ),
+        )
+
+    def _ensure_logs_tab_visible(self, select_tab: bool) -> None:
+        if not self._logs_tab_visible:
+            self.bottom_tabs.addTab(self.logs_tab, "Logs de Envio")
+            self._logs_tab_visible = True
+
+        if select_tab:
+            self.bottom_tabs.setCurrentWidget(self.logs_tab)
+
+    def _hide_logs_tab(self) -> None:
+        if not self._logs_tab_visible:
+            return
+
+        logs_tab_index = self.bottom_tabs.indexOf(self.logs_tab)
+        if logs_tab_index < 0:
+            self._logs_tab_visible = False
+            return
+
+        if self.bottom_tabs.currentIndex() == logs_tab_index:
+            self.bottom_tabs.setCurrentWidget(self.editor_tab)
+
+        self.bottom_tabs.removeTab(logs_tab_index)
+        self._logs_tab_visible = False
 
     def _refresh_preview_candidates(self) -> None:
         current_key: tuple[str, str] | None = None

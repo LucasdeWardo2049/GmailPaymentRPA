@@ -54,14 +54,19 @@ Ao salvar CSV editado, o arquivo inclui as colunas originais e tambem:
 ## Tela 3 - SKIP, Modos e Placeholders
 - A tabela da Tela 3 possui coluna `motivo` para exibir motivo de SKIP.
 - Registros inelegiveis ficam cinza, com checkbox desabilitado, e nao entram no envio.
+- A tela foi reorganizada em duas metades:
+	- Metade superior: tabela de destinatarios + botoes principais de acao.
+	- Metade inferior: abas para editar mensagem, visualizar preview e acompanhar logs.
 - A composicao possui dois modos:
 	- Modo Global: assunto/corpo unicos para todo o lote.
 	- Modo por Cliente: templates por registro com placeholders.
 - No modo por cliente:
-	- Preset inicial disponivel: `Cobranca amigavel` (alem de `Template manual`).
+	- Presets disponiveis: `Template manual`, `Cobranca amigavel`, `2o aviso`, `Aviso final` e `Ultima tentativa`.
 	- Botoes clicaveis para inserir placeholders no cursor.
+	- Botao `Ver Variaveis Disponiveis { }` abre um modal de ajuda com placeholders e exemplos.
 	- Preview por cliente com apenas registros elegiveis selecionados.
 	- Feedback visual quando template estiver invalido.
+- A aba de logs de envio fica oculta e aparece automaticamente quando o envio inicia.
 
 ### Regras simples de elegibilidade (SKIP)
 Um registro e elegivel apenas quando:
