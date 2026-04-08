@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -17,7 +18,13 @@ LogCallback = Callable[[str], None]
 class GmailPlaywrightSender:
     DISCARD_NAME_PATTERN = re.compile(r"discard|descartar", re.IGNORECASE)
 
-    COMPOSE_SELECTOR = 'div[role="button"][gh="cm"]'
+    COMPOSE_SELECTORS = (
+        'div[role="button"][gh="cm"]',
+        'div[aria-label="Compose"]',
+        'div[aria-label*="Compose"]',
+        'div[aria-label="Escrever"]',
+        'div[aria-label*="Escrever"]',
+    )
     COMPOSE_DIALOG_SELECTOR = 'div[role="dialog"]'
     TO_SELECTORS = (
         'textarea[aria-label*="Para"]',
@@ -87,9 +94,10 @@ class GmailPlaywrightSender:
         subject: str,
         body: str,
         log_callback: LogCallback | None = None,
-    ) -> dict[str, int]:
+    ) -> dict[str, object]:
         ok_count = 0
         error_count = 0
+        results: list[dict[str, object]] = []
 
         with sync_playwright() as playwright:
             context = self._launch_context(playwright)
@@ -101,16 +109,112 @@ class GmailPlaywrightSender:
                     raise RuntimeError("Sessao Gmail invalida. Faca login na Tela 1.")
 
                 for record in recipients:
+                    email = (record.email or "").strip()
+                    if not email:
+                        error_count += 1
+                        error_message = "Registro sem email valido"
+                        self._log(log_callback, f"ERRO | {record.id} | {email} | {error_message}")
+                        results.append(
+                            {
+                                "id": record.id,
+                                "email": email,
+                                "ok": False,
+                                "error": error_message,
+                            }
+                        )
+                        continue
+
                     try:
-                        self._send_single(page, record.email, subject, body)
+                        self._send_single(page, email, subject, body)
                         ok_count += 1
-                        self._log(log_callback, f"OK | {record.id} | {record.email}")
+                        self._log(log_callback, f"OK | {record.id} | {email}")
+                        results.append(
+                            {
+                                "id": record.id,
+                                "email": email,
+                                "ok": True,
+                                "error": "",
+                            }
+                        )
                     except Exception as error:  # noqa: BLE001
                         error_count += 1
-                        self._log(log_callback, f"ERRO | {record.id} | {record.email} | {error}")
+                        error_message = str(error)
+                        self._log(log_callback, f"ERRO | {record.id} | {email} | {error_message}")
+                        results.append(
+                            {
+                                "id": record.id,
+                                "email": email,
+                                "ok": False,
+                                "error": error_message,
+                            }
+                        )
                         self._dismiss_compose_if_open(page)
 
-                return {"ok": ok_count, "error": error_count}
+                return {"ok": ok_count, "error": error_count, "results": results}
+            finally:
+                context.close()
+
+    def send_batch_composed(
+        self,
+        items: Sequence[tuple[ClientRecord, str, str]],
+        log_callback: LogCallback | None = None,
+    ) -> dict[str, object]:
+        ok_count = 0
+        error_count = 0
+        results: list[dict[str, object]] = []
+
+        with sync_playwright() as playwright:
+            context = self._launch_context(playwright)
+            try:
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto("https://mail.google.com/", wait_until="domcontentloaded")
+
+                if not self._wait_for_compose(page, timeout_ms=20000):
+                    raise RuntimeError("Sessao Gmail invalida. Faca login na Tela 1.")
+
+                for record, subject_final, body_final in items:
+                    email = (record.email or "").strip()
+                    if not email:
+                        error_count += 1
+                        error_message = "Registro sem email valido"
+                        self._log(log_callback, f"ERRO | {record.id} | {email} | {error_message}")
+                        results.append(
+                            {
+                                "id": record.id,
+                                "email": email,
+                                "ok": False,
+                                "error": error_message,
+                            }
+                        )
+                        continue
+
+                    try:
+                        self._send_single(page, email, subject_final, body_final)
+                        ok_count += 1
+                        self._log(log_callback, f"OK | {record.id} | {email}")
+                        results.append(
+                            {
+                                "id": record.id,
+                                "email": email,
+                                "ok": True,
+                                "error": "",
+                            }
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        error_count += 1
+                        error_message = str(error)
+                        self._log(log_callback, f"ERRO | {record.id} | {email} | {error_message}")
+                        results.append(
+                            {
+                                "id": record.id,
+                                "email": email,
+                                "ok": False,
+                                "error": error_message,
+                            }
+                        )
+                        self._dismiss_compose_if_open(page)
+
+                return {"ok": ok_count, "error": error_count, "results": results}
             finally:
                 context.close()
 
@@ -133,14 +237,22 @@ class GmailPlaywrightSender:
         )
 
     def _wait_for_compose(self, page: Page, timeout_ms: int) -> bool:
-        try:
-            page.locator(self.COMPOSE_SELECTOR).first.wait_for(state="visible", timeout=timeout_ms)
-            return True
-        except PlaywrightTimeoutError:
-            return False
+        deadline = time.monotonic() + (timeout_ms / 1000)
+        while time.monotonic() < deadline:
+            for selector in self.COMPOSE_SELECTORS:
+                locator = page.locator(selector).first
+                if locator.count() == 0:
+                    continue
+                try:
+                    if locator.is_visible():
+                        return True
+                except Exception:
+                    continue
+            page.wait_for_timeout(250)
+        return False
 
     def _send_single(self, page: Page, email: str, subject: str, body: str) -> None:
-        page.locator(self.COMPOSE_SELECTOR).first.click()
+        self._click_compose(page)
         page.wait_for_timeout(1000)
         compose_dialog = self._wait_for_compose_dialog(page)
 
@@ -151,6 +263,20 @@ class GmailPlaywrightSender:
         self._send_compose(compose_dialog, page)
 
         page.wait_for_timeout(1200)
+
+    def _click_compose(self, page: Page) -> None:
+        for selector in self.COMPOSE_SELECTORS:
+            locator = page.locator(selector).first
+            if locator.count() == 0:
+                continue
+
+            try:
+                locator.click(timeout=2500)
+                return
+            except Exception:
+                continue
+
+        raise RuntimeError("Nao foi possivel localizar botao Compose/Escrever.")
 
     def _wait_for_compose_dialog(self, page: Page) -> Locator:
         dialog = page.locator(self.COMPOSE_DIALOG_SELECTOR).last
