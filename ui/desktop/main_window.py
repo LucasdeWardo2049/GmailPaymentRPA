@@ -8,6 +8,7 @@ from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QHeaderView,
@@ -39,7 +40,11 @@ from rpa.csv_loader import (
     validate_record_fields,
 )
 from services.gmail_playwright_sender import GmailPlaywrightSender
-from services.message_composer import compose_from_user_templates, validate_templates
+from services.message_composer import (
+    SUPPORTED_PLACEHOLDERS,
+    compose_from_user_templates,
+    validate_templates,
+)
 from services.message_rules import evaluate_record
 
 CSV_HEADERS = [
@@ -583,11 +588,28 @@ class SendPage(QWidget):
     SEND_COL_ULTIMA = 7
     SEND_COL_MOTIVO = 8
 
+    PRESET_MANUAL = "manual"
+    PRESET_FRIENDLY = "friendly"
+
     def __init__(self) -> None:
         super().__init__()
         self._records: list[ClientRecord] = []
+        self._preview_records: list[ClientRecord] = []
         self._updating_table = False
         self._is_busy = False
+        self._preset_templates: dict[str, tuple[str, str]] = {
+            self.PRESET_FRIENDLY: (
+                "Lembrete amigavel - {cliente_nome} (ID {record_id})",
+                (
+                    "Ola {cliente_nome},\n\n"
+                    "Identificamos uma pendencia no valor de R$ {valor}.\n"
+                    "Vencimento: {vencimento}.\n"
+                    "Dias em atraso: {dias_atraso}.\n\n"
+                    "Se ja efetuou o pagamento, desconsidere esta mensagem.\n"
+                    "Obrigado."
+                ),
+            ),
+        }
 
         title = QLabel("Tela 3/3 - Personalizacao e Envio")
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
@@ -633,24 +655,62 @@ class SendPage(QWidget):
 
         self.subject_edit = QLineEdit()
         self.subject_edit.setPlaceholderText("Assunto global do lote")
-        self.subject_edit.setToolTip("No modo per-client, este campo aceita placeholders")
-        self.subject_edit.setAccessibleName("Campo assunto")
+        self.subject_edit.setToolTip("Assunto fixo para todos os destinatarios no modo global")
+        self.subject_edit.setAccessibleName("Campo assunto global")
 
         self.body_edit = QPlainTextEdit()
         self.body_edit.setPlaceholderText("Corpo global do lote")
-        self.body_edit.setToolTip("No modo per-client, este campo aceita placeholders")
-        self.body_edit.setAccessibleName("Campo corpo da mensagem")
+        self.body_edit.setToolTip("Mensagem fixa para todos os destinatarios no modo global")
+        self.body_edit.setAccessibleName("Campo corpo global da mensagem")
+
+        self.template_preset_combo = QComboBox()
+        self.template_preset_combo.addItem("Template manual", self.PRESET_MANUAL)
+        self.template_preset_combo.addItem("Cobranca amigavel", self.PRESET_FRIENDLY)
+        self.template_preset_combo.setToolTip("Escolha um preset para preencher assunto/corpo template")
+
+        self.template_subject_edit = QLineEdit()
+        self.template_subject_edit.setPlaceholderText("Assunto template por cliente")
+        self.template_subject_edit.setToolTip("Aceita placeholders como {cliente_nome} e {dias_atraso}")
+        self.template_subject_edit.setAccessibleName("Campo assunto template por cliente")
+
+        self.template_body_edit = QPlainTextEdit()
+        self.template_body_edit.setPlaceholderText("Corpo template por cliente")
+        self.template_body_edit.setToolTip("Aceita placeholders por cliente")
+        self.template_body_edit.setAccessibleName("Campo corpo template por cliente")
+
+        placeholders_text = ", ".join(f"{{{name}}}" for name in SUPPORTED_PLACEHOLDERS)
+        self.placeholder_help_label = QLabel(f"Placeholders disponiveis: {placeholders_text}")
+        self.placeholder_help_label.setWordWrap(True)
+
+        placeholder_buttons_layout = QHBoxLayout()
+        for name in SUPPORTED_PLACEHOLDERS:
+            token = f"{{{name}}}"
+            button = QPushButton(token)
+            button.setToolTip(f"Inserir {token} no cursor do template")
+            button.clicked.connect(lambda _, value=token: self._insert_placeholder(value))
+            placeholder_buttons_layout.addWidget(button)
+        placeholder_buttons_layout.addStretch()
+
+        self.preview_client_combo = QComboBox()
+        self.preview_client_combo.setToolTip("Selecione um cliente elegivel para visualizacao")
+
+        self.preview_subject_view = QLineEdit()
+        self.preview_subject_view.setReadOnly(True)
+        self.preview_subject_view.setPlaceholderText("Assunto renderizado")
+
+        self.preview_body_view = QPlainTextEdit()
+        self.preview_body_view.setReadOnly(True)
+        self.preview_body_view.setMaximumHeight(130)
+        self.preview_body_view.setPlaceholderText("Corpo renderizado")
+
+        self.preview_status_label = QLabel("Preview por cliente elegivel.")
+        self.preview_status_label.setWordWrap(True)
 
         self.logs_box = QPlainTextEdit()
         self.logs_box.setReadOnly(True)
         self.logs_box.setMaximumHeight(190)
         self.logs_box.setPlaceholderText("Logs de envio")
         self.logs_box.setAccessibleName("Area de logs de envio")
-
-        self.placeholder_help_label = QLabel(
-            "Placeholders disponiveis: {cliente_nome}, {valor}, {vencimento}, {dias_atraso}, {record_id}"
-        )
-        self.placeholder_help_label.setWordWrap(True)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1)
@@ -665,17 +725,50 @@ class SendPage(QWidget):
         top_buttons.addWidget(self.per_client_checkbox)
         top_buttons.addWidget(self.send_button)
 
-        form = QFormLayout()
-        form.addRow("Assunto", self.subject_edit)
-        form.addRow("Corpo", self.body_edit)
+        self.global_section = QWidget()
+        global_layout = QVBoxLayout(self.global_section)
+        global_layout.setContentsMargins(0, 0, 0, 0)
+        global_layout.setSpacing(8)
+        global_title = QLabel("Modo Global (lote unico)")
+        global_title.setStyleSheet("font-weight: 600;")
+        global_form = QFormLayout()
+        global_form.addRow("Assunto", self.subject_edit)
+        global_form.addRow("Corpo", self.body_edit)
+        global_layout.addWidget(global_title)
+        global_layout.addLayout(global_form)
+
+        self.per_client_section = QWidget()
+        per_client_layout = QVBoxLayout(self.per_client_section)
+        per_client_layout.setContentsMargins(0, 0, 0, 0)
+        per_client_layout.setSpacing(8)
+        per_client_title = QLabel("Modo por Cliente (templates)")
+        per_client_title.setStyleSheet("font-weight: 600;")
+
+        template_form = QFormLayout()
+        template_form.addRow("Preset", self.template_preset_combo)
+        template_form.addRow("Assunto template", self.template_subject_edit)
+        template_form.addRow("Corpo template", self.template_body_edit)
+
+        preview_form = QFormLayout()
+        preview_form.addRow("Cliente de preview", self.preview_client_combo)
+        preview_form.addRow("Assunto renderizado", self.preview_subject_view)
+        preview_form.addRow("Corpo renderizado", self.preview_body_view)
+
+        per_client_layout.addWidget(per_client_title)
+        per_client_layout.addLayout(template_form)
+        per_client_layout.addWidget(self.placeholder_help_label)
+        per_client_layout.addLayout(placeholder_buttons_layout)
+        per_client_layout.addWidget(QLabel("Preview por cliente elegivel"))
+        per_client_layout.addLayout(preview_form)
+        per_client_layout.addWidget(self.preview_status_label)
 
         layout = QVBoxLayout(self)
         layout.addWidget(title)
         layout.addLayout(top_buttons)
         layout.addWidget(self.selected_label)
         layout.addWidget(self.table)
-        layout.addWidget(self.placeholder_help_label)
-        layout.addLayout(form)
+        layout.addWidget(self.global_section)
+        layout.addWidget(self.per_client_section)
         layout.addWidget(QLabel("Logs"))
         layout.addWidget(self.logs_box)
         layout.addWidget(self.progress_bar)
@@ -684,10 +777,19 @@ class SendPage(QWidget):
         self.send_button.clicked.connect(self._emit_send)
         self.select_all_button.clicked.connect(self.select_all_eligible_clicked.emit)
         self.clear_selection_button.clicked.connect(self.clear_selection_clicked.emit)
-        self.subject_edit.textChanged.connect(self.subject_changed.emit)
-        self.body_edit.textChanged.connect(lambda: self.body_changed.emit(self.body_edit.toPlainText()))
+        self.subject_edit.textChanged.connect(lambda _: self._emit_active_message_changed())
+        self.body_edit.textChanged.connect(lambda: self._emit_active_message_changed())
+        self.template_subject_edit.textChanged.connect(lambda _: self._on_template_changed())
+        self.template_body_edit.textChanged.connect(self._on_template_changed)
+        self.template_preset_combo.currentIndexChanged.connect(lambda _: self._on_preset_changed())
+        self.preview_client_combo.currentIndexChanged.connect(lambda _: self._update_preview())
         self.table.itemChanged.connect(self._on_item_changed)
-        self.per_client_checkbox.toggled.connect(lambda _: self.selection_changed.emit())
+        self.per_client_checkbox.toggled.connect(self._on_mode_toggled)
+
+        self._update_mode_ui()
+        self._refresh_preview_candidates()
+        self._update_preview()
+        self._emit_active_message_changed()
 
     def set_selected_recipients(self, records: list[ClientRecord]) -> None:
         self._records = list(records)
@@ -700,6 +802,8 @@ class SendPage(QWidget):
             self._updating_table = False
 
         self._update_selected_label()
+        self._refresh_preview_candidates()
+        self._update_preview()
         self.selection_changed.emit()
 
     def selected_records(self) -> list[ClientRecord]:
@@ -737,6 +841,8 @@ class SendPage(QWidget):
             self._updating_table = False
 
         self._update_selected_label()
+        self._refresh_preview_candidates()
+        self._update_preview()
         self.selection_changed.emit()
 
     def clear_selection(self) -> None:
@@ -751,21 +857,37 @@ class SendPage(QWidget):
             self._updating_table = False
 
         self._update_selected_label()
+        self._refresh_preview_candidates()
+        self._update_preview()
         self.selection_changed.emit()
 
     def set_subject(self, subject: str) -> None:
-        if self.subject_edit.text() == subject:
-            return
-        blocked = self.subject_edit.blockSignals(True)
-        self.subject_edit.setText(subject)
-        self.subject_edit.blockSignals(blocked)
+        if self.subject_edit.text() != subject:
+            blocked = self.subject_edit.blockSignals(True)
+            self.subject_edit.setText(subject)
+            self.subject_edit.blockSignals(blocked)
+
+        if self.template_subject_edit.text() != subject:
+            blocked = self.template_subject_edit.blockSignals(True)
+            self.template_subject_edit.setText(subject)
+            self.template_subject_edit.blockSignals(blocked)
+
+        self._emit_active_message_changed()
+        self._update_preview()
 
     def set_body(self, body: str) -> None:
-        if self.body_edit.toPlainText() == body:
-            return
-        blocked = self.body_edit.blockSignals(True)
-        self.body_edit.setPlainText(body)
-        self.body_edit.blockSignals(blocked)
+        if self.body_edit.toPlainText() != body:
+            blocked = self.body_edit.blockSignals(True)
+            self.body_edit.setPlainText(body)
+            self.body_edit.blockSignals(blocked)
+
+        if self.template_body_edit.toPlainText() != body:
+            blocked = self.template_body_edit.blockSignals(True)
+            self.template_body_edit.setPlainText(body)
+            self.template_body_edit.blockSignals(blocked)
+
+        self._emit_active_message_changed()
+        self._update_preview()
 
     def append_log(self, text: str) -> None:
         self.logs_box.appendPlainText(text)
@@ -784,8 +906,8 @@ class SendPage(QWidget):
         self.clear_selection_button.setEnabled(not busy)
         self.per_client_checkbox.setEnabled(not busy)
         self.table.setEnabled(not busy)
-        self.subject_edit.setEnabled(not busy)
-        self.body_edit.setEnabled(not busy)
+        self.global_section.setEnabled(not busy)
+        self.per_client_section.setEnabled(not busy)
         self.progress_bar.setVisible(busy)
         if busy:
             self.progress_bar.setRange(0, 0)
@@ -794,8 +916,8 @@ class SendPage(QWidget):
             self.progress_bar.setValue(0)
 
     def _emit_send(self) -> None:
-        subject = self.subject_edit.text().strip()
-        body = self.body_edit.toPlainText().strip()
+        subject = self._active_subject_text().strip()
+        body = self._active_body_text().strip()
 
         if not subject:
             QMessageBox.warning(self, "Assunto vazio", "Preencha o assunto antes de enviar.")
@@ -808,6 +930,13 @@ class SendPage(QWidget):
         if self.selected_count() == 0:
             QMessageBox.warning(self, "Sem selecao", "Selecione ao menos um destinatario elegivel.")
             return
+
+        if self.is_per_client_enabled():
+            try:
+                validate_templates(subject, body)
+            except ValueError as error:
+                QMessageBox.warning(self, "Template invalido", str(error))
+                return
 
         self.send_clicked.emit(subject, body, self.is_per_client_enabled())
 
@@ -874,10 +1003,184 @@ class SendPage(QWidget):
             return
 
         self._update_selected_label()
+        self._refresh_preview_candidates()
+        self._update_preview()
         self.selection_changed.emit()
 
     def _update_selected_label(self) -> None:
         self.selected_label.setText(f"Destinatarios selecionados: {self.selected_count()}")
+
+    def _on_mode_toggled(self, _: bool) -> None:
+        self._update_mode_ui()
+        self._emit_active_message_changed()
+        self._refresh_preview_candidates()
+        self._update_preview()
+        self.selection_changed.emit()
+
+    def _on_template_changed(self) -> None:
+        self._emit_active_message_changed()
+        self._update_preview()
+
+    def _update_mode_ui(self) -> None:
+        per_client = self.is_per_client_enabled()
+        self.global_section.setVisible(not per_client)
+        self.per_client_section.setVisible(per_client)
+        self.send_button.setText("Enviar por cliente" if per_client else "Enviar")
+
+    def _active_subject_text(self) -> str:
+        if self.is_per_client_enabled():
+            return self.template_subject_edit.text()
+        return self.subject_edit.text()
+
+    def _active_body_text(self) -> str:
+        if self.is_per_client_enabled():
+            return self.template_body_edit.toPlainText()
+        return self.body_edit.toPlainText()
+
+    def _emit_active_message_changed(self) -> None:
+        self.subject_changed.emit(self._active_subject_text())
+        self.body_changed.emit(self._active_body_text())
+
+    def _on_preset_changed(self) -> None:
+        preset_key = str(self.template_preset_combo.currentData() or self.PRESET_MANUAL)
+        if preset_key == self.PRESET_MANUAL:
+            self._on_template_changed()
+            return
+
+        preset = self._preset_templates.get(preset_key)
+        if preset is None:
+            return
+
+        subject_template, body_template = preset
+        block_subject = self.template_subject_edit.blockSignals(True)
+        block_body = self.template_body_edit.blockSignals(True)
+        try:
+            self.template_subject_edit.setText(subject_template)
+            self.template_body_edit.setPlainText(body_template)
+        finally:
+            self.template_subject_edit.blockSignals(block_subject)
+            self.template_body_edit.blockSignals(block_body)
+
+        self._on_template_changed()
+
+    def _insert_placeholder(self, placeholder: str) -> None:
+        if self.template_subject_edit.hasFocus():
+            self.template_subject_edit.insert(placeholder)
+            return
+
+        cursor = self.template_body_edit.textCursor()
+        cursor.insertText(placeholder)
+        self.template_body_edit.setTextCursor(cursor)
+        self.template_body_edit.setFocus()
+
+    def _refresh_preview_candidates(self) -> None:
+        current_key: tuple[str, str] | None = None
+        current_index = self.preview_client_combo.currentIndex()
+        if 0 <= current_index < len(self._preview_records):
+            current_record = self._preview_records[current_index]
+            current_key = (
+                current_record.id,
+                (current_record.email or "").strip().lower(),
+            )
+
+        blocked = self.preview_client_combo.blockSignals(True)
+        try:
+            self.preview_client_combo.clear()
+            self._preview_records = []
+
+            restored_index = -1
+            for row_index, record in enumerate(self._records):
+                checkbox = self.table.item(row_index, self.SEND_COL_SELECT)
+                if checkbox is None:
+                    continue
+                if not (checkbox.flags() & Qt.ItemIsEnabled):
+                    continue
+                if checkbox.checkState() != Qt.Checked:
+                    continue
+
+                decision = evaluate_record(record, cooldown_days=3)
+                email = (record.email or "").strip()
+                if not (record.is_valid and decision.eligible and email):
+                    continue
+
+                self._preview_records.append(record)
+                display_name = record.cliente_nome or "(sem nome)"
+                self.preview_client_combo.addItem(f"{display_name} <{email}>")
+
+                key = (record.id, email.lower())
+                if current_key is not None and key == current_key:
+                    restored_index = len(self._preview_records) - 1
+
+            if self._preview_records:
+                if restored_index >= 0:
+                    self.preview_client_combo.setCurrentIndex(restored_index)
+                else:
+                    self.preview_client_combo.setCurrentIndex(0)
+        finally:
+            self.preview_client_combo.blockSignals(blocked)
+
+    def _set_preview_message(self, text: str, color: str) -> None:
+        self.preview_status_label.setStyleSheet(f"font-weight: 600; color: {color};")
+        self.preview_status_label.setText(text)
+
+    def _update_preview(self) -> None:
+        if not self.is_per_client_enabled():
+            self.preview_subject_view.clear()
+            self.preview_body_view.clear()
+            self._set_preview_message(
+                "Ative o modo por cliente para visualizar o preview do template.",
+                "#93c5fd",
+            )
+            return
+
+        if not self._preview_records:
+            self.preview_subject_view.clear()
+            self.preview_body_view.clear()
+            self._set_preview_message(
+                "Nenhum cliente elegivel selecionado para preview.",
+                "#fca5a5",
+            )
+            return
+
+        preview_index = self.preview_client_combo.currentIndex()
+        if preview_index < 0 or preview_index >= len(self._preview_records):
+            preview_index = 0
+            blocked = self.preview_client_combo.blockSignals(True)
+            try:
+                self.preview_client_combo.setCurrentIndex(0)
+            finally:
+                self.preview_client_combo.blockSignals(blocked)
+
+        record = self._preview_records[preview_index]
+        decision = evaluate_record(record, cooldown_days=3)
+
+        subject_template = self.template_subject_edit.text().strip()
+        body_template = self.template_body_edit.toPlainText().strip()
+        if not subject_template and not body_template:
+            self.preview_subject_view.clear()
+            self.preview_body_view.clear()
+            self._set_preview_message(
+                "Preencha assunto e corpo template para gerar o preview.",
+                "#93c5fd",
+            )
+            return
+
+        try:
+            composed = compose_from_user_templates(
+                record,
+                decision,
+                subject_template,
+                body_template,
+            )
+        except Exception as error:  # noqa: BLE001
+            self.preview_subject_view.clear()
+            self.preview_body_view.clear()
+            self._set_preview_message(f"Template invalido: {error}", "#fca5a5")
+            return
+
+        self.preview_subject_view.setText(composed.subject)
+        self.preview_body_view.setPlainText(composed.body)
+        self._set_preview_message("Template valido para o cliente selecionado.", "#86efac")
 
 
 class MainWindow(QMainWindow):
