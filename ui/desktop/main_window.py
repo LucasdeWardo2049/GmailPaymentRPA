@@ -4,18 +4,20 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QThread, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QFileDialog,
     QFormLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QStackedWidget,
     QTableWidget,
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from models.client_record import ClientRecord
 from rpa.csv_loader import (
+    EXPECTED_COLUMNS,
     format_valor,
     is_valid_email,
     load_client_records,
@@ -36,6 +39,8 @@ from rpa.csv_loader import (
     validate_record_fields,
 )
 from services.gmail_playwright_sender import GmailPlaywrightSender
+from services.message_composer import compose_from_user_templates, validate_templates
+from services.message_rules import evaluate_record
 
 CSV_HEADERS = [
     "Selecionar",
@@ -60,6 +65,37 @@ COL_ULTIMA = 7
 COL_OBS = 8
 
 EDITABLE_COLUMNS = {COL_CLIENTE, COL_EMAIL, COL_STATUS, COL_VALOR}
+
+APP_STYLESHEET = """
+QWidget {
+    font-size: 13px;
+}
+
+QLineEdit, QPlainTextEdit, QTableWidget {
+    border: 1px solid #a8a8a8;
+    border-radius: 4px;
+    padding: 4px;
+    background-color: #ffffff;
+}
+
+QPushButton {
+    min-height: 30px;
+    padding: 4px 10px;
+}
+
+QPushButton:disabled {
+    color: #666666;
+}
+
+QLineEdit:focus, QPlainTextEdit:focus, QTableWidget:focus, QPushButton:focus, QCheckBox:focus {
+    border: 2px solid #0a6ed1;
+    outline: none;
+}
+
+QLabel#statusLabel {
+    font-weight: 600;
+}
+"""
 
 
 class WorkerThread(QThread):
@@ -88,21 +124,83 @@ class SendEmailsThread(QThread):
         records: list[ClientRecord],
         subject: str,
         body: str,
+        per_client: bool,
+        cooldown_days: int = 3,
     ) -> None:
         super().__init__()
         self._sender = sender
         self._records = records
         self._subject = subject
         self._body = body
+        self._per_client = per_client
+        self._cooldown_days = cooldown_days
 
     def run(self) -> None:
         try:
-            result = self._sender.send_batch(
-                self._records,
-                self._subject,
-                self._body,
-                log_callback=self.log.emit,
-            )
+            if not self._per_client:
+                result = self._sender.send_batch(
+                    self._records,
+                    self._subject,
+                    self._body,
+                    log_callback=self.log.emit,
+                )
+                self.summary.emit(result)
+                return
+
+            composed_items: list[tuple[ClientRecord, str, str]] = []
+            pre_results: list[dict[str, object]] = []
+            skip_count = 0
+            template_error_count = 0
+
+            for record in self._records:
+                decision = evaluate_record(record, cooldown_days=self._cooldown_days)
+                email = (record.email or "").strip()
+
+                if not decision.eligible:
+                    reason = decision.reason or "registro nao elegivel"
+                    skip_count += 1
+                    self.log.emit(f"SKIP | {record.id} | {email} | {reason}")
+                    pre_results.append(
+                        {
+                            "id": record.id,
+                            "email": email,
+                            "ok": False,
+                            "error": reason,
+                            "skip": True,
+                        }
+                    )
+                    continue
+
+                try:
+                    composed = compose_from_user_templates(record, decision, self._subject, self._body)
+                except Exception as error:  # noqa: BLE001
+                    error_message = str(error)
+                    template_error_count += 1
+                    self.log.emit(f"ERRO | {record.id} | {email} | {error_message}")
+                    pre_results.append(
+                        {
+                            "id": record.id,
+                            "email": email,
+                            "ok": False,
+                            "error": error_message,
+                            "skip": False,
+                        }
+                    )
+                    continue
+
+                composed_items.append((record, composed.subject, composed.body))
+
+            send_result: dict[str, object] = {"ok": 0, "error": 0, "results": []}
+            if composed_items:
+                send_result = self._sender.send_batch_composed(composed_items, log_callback=self.log.emit)
+
+            summary = {
+                "ok": int(send_result.get("ok", 0)),
+                "error": int(send_result.get("error", 0)) + template_error_count,
+                "skip": skip_count,
+                "results": [*pre_results, *list(send_result.get("results", []))],
+            }
+            result = summary
             self.summary.emit(result)
         except Exception as error:  # noqa: BLE001
             self.failed.emit(str(error))
@@ -121,18 +219,38 @@ class LoginPage(QWidget):
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
 
         self.profile_dir_edit = QLineEdit(str(Path("playwright-profile").resolve()))
+        self.profile_dir_edit.setClearButtonEnabled(True)
+        self.profile_dir_edit.setPlaceholderText("Informe ou selecione a pasta de perfil do navegador")
+        self.profile_dir_edit.setAccessibleName("Diretorio do perfil Playwright")
+        self.profile_dir_edit.setToolTip("Pasta usada para manter o login do Gmail entre execucoes")
+        self.browse_profile_button = QPushButton("Escolher pasta")
+        self.browse_profile_button.setToolTip("Selecionar pasta de perfil")
         self.headless_checkbox = QCheckBox("Headless")
         self.headless_checkbox.setChecked(False)
+        self.headless_checkbox.setToolTip("Use apenas para testes. No modo visivel o login manual e mais confiavel")
 
         self.open_login_button = QPushButton("Abrir Gmail e fazer login")
         self.validate_button = QPushButton("Validar sessao")
         self.next_button = QPushButton("Proximo")
         self.next_button.setEnabled(False)
+        self.open_login_button.setToolTip("Abre o Gmail para login manual")
+        self.validate_button.setToolTip("Verifica se a sessao salva ainda esta valida")
+        self.next_button.setToolTip("Ir para a etapa de CSV apos sessao valida")
 
         self.status_label = QLabel("Sessao nao validada.")
+        self.status_label.setObjectName("statusLabel")
+        self.status_label.setWordWrap(True)
 
         form = QFormLayout()
-        form.addRow("Diretorio do perfil Playwright", self.profile_dir_edit)
+        profile_row = QHBoxLayout()
+        profile_row.setContentsMargins(0, 0, 0, 0)
+        profile_row.addWidget(self.profile_dir_edit)
+        profile_row.addWidget(self.browse_profile_button)
+
+        profile_row_widget = QWidget()
+        profile_row_widget.setLayout(profile_row)
+
+        form.addRow("Diretorio do perfil Playwright", profile_row_widget)
         form.addRow("", self.headless_checkbox)
 
         buttons = QHBoxLayout()
@@ -150,6 +268,7 @@ class LoginPage(QWidget):
 
         self.open_login_button.clicked.connect(self._emit_open_login)
         self.validate_button.clicked.connect(self._emit_validate)
+        self.browse_profile_button.clicked.connect(self._choose_profile_dir)
         self.next_button.clicked.connect(self.next_clicked.emit)
 
     def set_busy(self, busy: bool) -> None:
@@ -182,10 +301,17 @@ class LoginPage(QWidget):
     def _emit_validate(self) -> None:
         self.validate_clicked.emit(self.get_profile_dir(), self.headless_checkbox.isChecked())
 
+    def _choose_profile_dir(self) -> None:
+        selected = QFileDialog.getExistingDirectory(self, "Selecionar diretorio de perfil", self.get_profile_dir())
+        if selected:
+            self.profile_dir_edit.setText(selected)
+
 
 class CsvPage(QWidget):
     select_csv_clicked = Signal()
     save_csv_clicked = Signal()
+    select_all_valid_clicked = Signal()
+    clear_selection_clicked = Signal()
     next_clicked = Signal()
     cell_edited = Signal(int, int, str, str)
     selection_toggled = Signal(int, bool)
@@ -199,30 +325,50 @@ class CsvPage(QWidget):
 
         self.select_csv_button = QPushButton("Carregar CSV")
         self.save_csv_button = QPushButton("Salvar CSV editado")
+        self.select_all_valid_button = QPushButton("Selecionar validos")
+        self.clear_selection_button = QPushButton("Limpar selecao")
         self.next_button = QPushButton("Proximo")
         self.next_button.setEnabled(False)
+        self.select_csv_button.setToolTip("Importar arquivo CSV")
+        self.save_csv_button.setToolTip("Salvar as alteracoes em um novo CSV")
+        self.select_all_valid_button.setToolTip("Marcar todos os registros validos")
+        self.clear_selection_button.setToolTip("Desmarcar todos os registros")
+        self.next_button.setToolTip("Ir para a tela de envio")
 
         self.selected_file_label = QLabel("Arquivo: nenhum")
         self.count_label = QLabel("Total: 0 | Validos: 0 | Selecionados: 0")
+        self.count_label.setWordWrap(True)
 
         self.table = QTableWidget(0, len(CSV_HEADERS))
         self.table.setHorizontalHeaderLabels(CSV_HEADERS)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(COL_SELECT, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(COL_ID, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(COL_STATUS, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(COL_VALOR, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(
             QAbstractItemView.DoubleClicked
             | QAbstractItemView.SelectedClicked
             | QAbstractItemView.EditKeyPressed
         )
+        self.table.setToolTip("Duplo clique em cliente_nome, email, status ou valor para editar")
 
         self.rejected_box = QPlainTextEdit()
         self.rejected_box.setReadOnly(True)
         self.rejected_box.setPlaceholderText("Rejeitados/invalidos por linha")
         self.rejected_box.setMaximumHeight(120)
+        self.rejected_box.setToolTip("Lista de linhas com problemas de validacao")
 
         top_buttons = QHBoxLayout()
         top_buttons.addWidget(self.select_csv_button)
         top_buttons.addWidget(self.save_csv_button)
+        top_buttons.addWidget(self.select_all_valid_button)
+        top_buttons.addWidget(self.clear_selection_button)
         top_buttons.addStretch()
         top_buttons.addWidget(self.next_button)
 
@@ -232,11 +378,14 @@ class CsvPage(QWidget):
         layout.addWidget(self.selected_file_label)
         layout.addWidget(self.count_label)
         layout.addWidget(self.table)
+        layout.addWidget(QLabel("Legenda: vermelho = invalido | laranja = ABERTO | cinza = PAGO/CANCELADO"))
         layout.addWidget(QLabel("Linhas invalidas"))
         layout.addWidget(self.rejected_box)
 
         self.select_csv_button.clicked.connect(self.select_csv_clicked.emit)
         self.save_csv_button.clicked.connect(self.save_csv_clicked.emit)
+        self.select_all_valid_button.clicked.connect(self.select_all_valid_clicked.emit)
+        self.clear_selection_button.clicked.connect(self.clear_selection_clicked.emit)
         self.next_button.clicked.connect(self.next_clicked.emit)
         self.table.itemChanged.connect(self._on_item_changed)
 
@@ -258,11 +407,13 @@ class CsvPage(QWidget):
     def populate_records(self, records: list[ClientRecord]) -> None:
         self._updating_table = True
         try:
+            self.table.setSortingEnabled(False)
             self.table.setRowCount(len(records))
             for row_index, record in enumerate(records):
                 self._render_row(row_index, record)
         finally:
             self._updating_table = False
+            self.table.setSortingEnabled(True)
 
     def refresh_row(self, row_index: int, record: ClientRecord) -> None:
         self._updating_table = True
@@ -374,25 +525,44 @@ class CsvPage(QWidget):
 
 class SendPage(QWidget):
     back_clicked = Signal()
-    send_clicked = Signal(str, str)
+    send_clicked = Signal(str, str, bool)
     subject_changed = Signal(str)
     body_changed = Signal(str)
+    selection_changed = Signal()
+
+    SEND_HEADERS = ["Enviar", *EXPECTED_COLUMNS, "motivo"]
+
+    SEND_COL_SELECT = 0
+    SEND_COL_ID = 1
+    SEND_COL_CLIENTE = 2
+    SEND_COL_EMAIL = 3
+    SEND_COL_STATUS = 4
+    SEND_COL_VALOR = 5
+    SEND_COL_VENCIMENTO = 6
+    SEND_COL_ULTIMA = 7
+    SEND_COL_MOTIVO = 8
 
     def __init__(self) -> None:
         super().__init__()
+        self._records: list[ClientRecord] = []
+        self._updating_table = False
+        self._is_busy = False
 
         title = QLabel("Tela 3/3 - Personalizacao e Envio")
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
 
         self.back_button = QPushButton("Voltar")
         self.send_button = QPushButton("Enviar")
+        self.per_client_checkbox = QCheckBox("Personalizar por cliente (placeholders)")
+        self.per_client_checkbox.setChecked(False)
 
         self.selected_label = QLabel("Destinatarios selecionados: 0")
 
-        self.selected_emails_box = QPlainTextEdit()
-        self.selected_emails_box.setReadOnly(True)
-        self.selected_emails_box.setMaximumHeight(120)
-        self.selected_emails_box.setPlaceholderText("Lista de emails selecionados")
+        self.table = QTableWidget(0, len(self.SEND_HEADERS))
+        self.table.setHorizontalHeaderLabels(self.SEND_HEADERS)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
 
         self.subject_edit = QLineEdit()
         self.subject_edit.setPlaceholderText("Assunto global do lote")
@@ -408,6 +578,7 @@ class SendPage(QWidget):
         top_buttons = QHBoxLayout()
         top_buttons.addWidget(self.back_button)
         top_buttons.addStretch()
+        top_buttons.addWidget(self.per_client_checkbox)
         top_buttons.addWidget(self.send_button)
 
         form = QFormLayout()
@@ -418,7 +589,7 @@ class SendPage(QWidget):
         layout.addWidget(title)
         layout.addLayout(top_buttons)
         layout.addWidget(self.selected_label)
-        layout.addWidget(self.selected_emails_box)
+        layout.addWidget(self.table)
         layout.addLayout(form)
         layout.addWidget(QLabel("Logs"))
         layout.addWidget(self.logs_box)
@@ -427,11 +598,42 @@ class SendPage(QWidget):
         self.send_button.clicked.connect(self._emit_send)
         self.subject_edit.textChanged.connect(self.subject_changed.emit)
         self.body_edit.textChanged.connect(lambda: self.body_changed.emit(self.body_edit.toPlainText()))
+        self.table.itemChanged.connect(self._on_item_changed)
+        self.per_client_checkbox.toggled.connect(lambda _: self.selection_changed.emit())
 
     def set_selected_recipients(self, records: list[ClientRecord]) -> None:
-        emails = [record.email or "" for record in records]
-        self.selected_label.setText(f"Destinatarios selecionados: {len(records)}")
-        self.selected_emails_box.setPlainText("\n".join(email for email in emails if email))
+        self._records = list(records)
+        self._updating_table = True
+        try:
+            self.table.setRowCount(len(self._records))
+            for row_index, record in enumerate(self._records):
+                self._render_row(row_index, record)
+        finally:
+            self._updating_table = False
+
+        self._update_selected_label()
+        self.selection_changed.emit()
+
+    def selected_records(self) -> list[ClientRecord]:
+        selected: list[ClientRecord] = []
+        for row_index, record in enumerate(self._records):
+            checkbox = self.table.item(row_index, self.SEND_COL_SELECT)
+            if checkbox is None:
+                continue
+
+            if not (checkbox.flags() & Qt.ItemIsEnabled):
+                continue
+
+            if checkbox.checkState() == Qt.Checked:
+                selected.append(record)
+
+        return selected
+
+    def selected_count(self) -> int:
+        return len(self.selected_records())
+
+    def is_per_client_enabled(self) -> bool:
+        return self.per_client_checkbox.isChecked()
 
     def set_subject(self, subject: str) -> None:
         if self.subject_edit.text() == subject:
@@ -454,11 +656,14 @@ class SendPage(QWidget):
         self.logs_box.clear()
 
     def set_send_enabled(self, enabled: bool) -> None:
-        self.send_button.setEnabled(enabled)
+        self.send_button.setEnabled(enabled and not self._is_busy)
 
     def set_busy(self, busy: bool) -> None:
+        self._is_busy = busy
         self.send_button.setEnabled(not busy)
         self.back_button.setEnabled(not busy)
+        self.per_client_checkbox.setEnabled(not busy)
+        self.table.setEnabled(not busy)
         self.subject_edit.setEnabled(not busy)
         self.body_edit.setEnabled(not busy)
 
@@ -474,7 +679,66 @@ class SendPage(QWidget):
             QMessageBox.warning(self, "Corpo vazio", "Preencha o corpo antes de enviar.")
             return
 
-        self.send_clicked.emit(subject, body)
+        if self.selected_count() == 0:
+            QMessageBox.warning(self, "Sem selecao", "Selecione ao menos um destinatario elegivel.")
+            return
+
+        self.send_clicked.emit(subject, body, self.is_per_client_enabled())
+
+    def _render_row(self, row_index: int, record: ClientRecord) -> None:
+        decision = evaluate_record(record, cooldown_days=3)
+        eligible = bool(record.is_valid and decision.eligible and (record.email or "").strip())
+
+        checkbox = QTableWidgetItem("")
+        flags = Qt.ItemIsSelectable | Qt.ItemIsUserCheckable
+        if eligible:
+            flags |= Qt.ItemIsEnabled
+        checkbox.setFlags(flags)
+        checkbox.setCheckState(Qt.Checked if eligible else Qt.Unchecked)
+        self.table.setItem(row_index, self.SEND_COL_SELECT, checkbox)
+
+        row_values = [
+            record.id,
+            record.cliente_nome or "",
+            record.email or "",
+            record.status or "",
+            format_valor(record.valor),
+            record.vencimento or "",
+            record.ultima_cobranca or "",
+            decision.reason if not decision.eligible else "",
+        ]
+
+        for column_index, value in enumerate(row_values, start=1):
+            item = QTableWidgetItem(value)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.table.setItem(row_index, column_index, item)
+
+        if not eligible:
+            self._apply_skip_style(row_index)
+
+    def _apply_skip_style(self, row_index: int) -> None:
+        background = QColor("#d8d8d8")
+        foreground = QColor("#5f5f5f")
+
+        for column_index in range(self.table.columnCount()):
+            item = self.table.item(row_index, column_index)
+            if item is None:
+                continue
+            item.setBackground(background)
+            item.setForeground(foreground)
+
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._updating_table:
+            return
+
+        if item.column() != self.SEND_COL_SELECT:
+            return
+
+        self._update_selected_label()
+        self.selection_changed.emit()
+
+    def _update_selected_label(self) -> None:
+        self.selected_label.setText(f"Destinatarios selecionados: {self.selected_count()}")
 
 
 class MainWindow(QMainWindow):
@@ -521,6 +785,7 @@ class MainWindow(QMainWindow):
         self.send_page.back_clicked.connect(self._back_to_csv)
         self.send_page.subject_changed.connect(self._on_subject_changed)
         self.send_page.body_changed.connect(self._on_body_changed)
+        self.send_page.selection_changed.connect(self._refresh_send_state)
         self.send_page.send_clicked.connect(self._send_emails)
 
     def _open_gmail_for_login(self, profile_dir: str, headless: bool) -> None:
@@ -738,8 +1003,8 @@ class MainWindow(QMainWindow):
         self.body = text.strip()
         self._refresh_send_state()
 
-    def _send_emails(self, subject: str, body: str) -> None:
-        records = self._selected_records()
+    def _send_emails(self, subject: str, body: str, per_client: bool) -> None:
+        records = self.send_page.selected_records()
         if not records:
             QMessageBox.warning(self, "Sem destinatarios", "Selecione destinatarios validos antes de enviar.")
             return
@@ -759,16 +1024,24 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Mensagem incompleta", "Assunto e corpo sao obrigatorios.")
             return
 
+        if per_client:
+            try:
+                validate_templates(self.subject, self.body)
+            except ValueError as error:
+                QMessageBox.warning(self, "Template invalido", str(error))
+                return
+
         sender = GmailPlaywrightSender(
             user_data_dir=self.login_page.get_profile_dir(),
             headless=self.login_page.headless_checkbox.isChecked(),
         )
 
         self.send_page.clear_logs()
-        self.send_page.append_log(f"Iniciando envio para {len(records)} destinatario(s)...")
+        mode_label = "per-client" if per_client else "lote unico"
+        self.send_page.append_log(f"Iniciando envio para {len(records)} destinatario(s) [{mode_label}]...")
         self.send_page.set_busy(True)
 
-        worker = SendEmailsThread(sender, records, self.subject, self.body)
+        worker = SendEmailsThread(sender, records, self.subject, self.body, per_client=per_client)
         self._send_worker = worker
 
         worker.log.connect(self.send_page.append_log)
@@ -782,16 +1055,17 @@ class MainWindow(QMainWindow):
         summary = dict(summary_obj) if isinstance(summary_obj, dict) else {}
         ok_count = int(summary.get("ok", 0))
         error_count = int(summary.get("error", 0))
+        skip_count = int(summary.get("skip", 0))
 
         self._apply_send_results(summary.get("results", []))
 
         self.send_page.append_log("---")
-        self.send_page.append_log(f"Resumo: OK={ok_count} | ERRO={error_count}")
+        self.send_page.append_log(f"Resumo: OK={ok_count} | ERRO={error_count} | SKIP={skip_count}")
 
         QMessageBox.information(
             self,
             "Envio finalizado",
-            f"Resumo do envio:\nOK: {ok_count}\nERRO: {error_count}",
+            f"Resumo do envio:\nOK: {ok_count}\nERRO: {error_count}\nSKIP: {skip_count}",
         )
 
     def _apply_send_results(self, results: object) -> None:
@@ -819,8 +1093,11 @@ class MainWindow(QMainWindow):
                 continue
 
             record = bucket.pop(0)
+            is_skip = bool(result.get("skip", False))
 
-            if ok:
+            if is_skip:
+                record.mark_send_skip(error_message or "Registro inelegivel")
+            elif ok:
                 record.mark_send_success()
             else:
                 record.mark_send_error(error_message or "Falha no envio")
@@ -844,7 +1121,7 @@ class MainWindow(QMainWindow):
     def _refresh_send_state(self) -> None:
         can_send = (
             self.logged_in
-            and len(self._selected_records()) > 0
+            and self.send_page.selected_count() > 0
             and bool(self.subject.strip())
             and bool(self.body.strip())
             and (self._send_worker is None or not self._send_worker.isRunning())

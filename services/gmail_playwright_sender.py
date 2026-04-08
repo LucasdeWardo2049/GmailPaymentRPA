@@ -154,6 +154,70 @@ class GmailPlaywrightSender:
             finally:
                 context.close()
 
+    def send_batch_composed(
+        self,
+        items: Sequence[tuple[ClientRecord, str, str]],
+        log_callback: LogCallback | None = None,
+    ) -> dict[str, object]:
+        ok_count = 0
+        error_count = 0
+        results: list[dict[str, object]] = []
+
+        with sync_playwright() as playwright:
+            context = self._launch_context(playwright)
+            try:
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto("https://mail.google.com/", wait_until="domcontentloaded")
+
+                if not self._wait_for_compose(page, timeout_ms=20000):
+                    raise RuntimeError("Sessao Gmail invalida. Faca login na Tela 1.")
+
+                for record, subject_final, body_final in items:
+                    email = (record.email or "").strip()
+                    if not email:
+                        error_count += 1
+                        error_message = "Registro sem email valido"
+                        self._log(log_callback, f"ERRO | {record.id} | {email} | {error_message}")
+                        results.append(
+                            {
+                                "id": record.id,
+                                "email": email,
+                                "ok": False,
+                                "error": error_message,
+                            }
+                        )
+                        continue
+
+                    try:
+                        self._send_single(page, email, subject_final, body_final)
+                        ok_count += 1
+                        self._log(log_callback, f"OK | {record.id} | {email}")
+                        results.append(
+                            {
+                                "id": record.id,
+                                "email": email,
+                                "ok": True,
+                                "error": "",
+                            }
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        error_count += 1
+                        error_message = str(error)
+                        self._log(log_callback, f"ERRO | {record.id} | {email} | {error_message}")
+                        results.append(
+                            {
+                                "id": record.id,
+                                "email": email,
+                                "ok": False,
+                                "error": error_message,
+                            }
+                        )
+                        self._dismiss_compose_if_open(page)
+
+                return {"ok": ok_count, "error": error_count, "results": results}
+            finally:
+                context.close()
+
     def _open_and_check_session(self, timeout_ms: int) -> bool:
         with sync_playwright() as playwright:
             context = self._launch_context(playwright)
