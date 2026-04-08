@@ -39,7 +39,7 @@ def test_evaluate_record_skips_when_vencimento_invalid() -> None:
 
 
 def test_evaluate_record_skips_when_not_overdue_yet() -> None:
-    record = _build_record(vencimento="2026-04-10")
+    record = _build_record(vencimento="10-04-2026")
 
     decision = evaluate_record(record, today=FIXED_TODAY)
 
@@ -49,7 +49,7 @@ def test_evaluate_record_skips_when_not_overdue_yet() -> None:
 
 
 def test_evaluate_record_skips_when_inside_cooldown() -> None:
-    record = _build_record(ultima_cobranca="2026-04-07")
+    record = _build_record(ultima_cobranca="07-04-2026")
 
     decision = evaluate_record(record, today=FIXED_TODAY, cooldown_days=3)
 
@@ -59,6 +59,16 @@ def test_evaluate_record_skips_when_inside_cooldown() -> None:
 
 
 def test_evaluate_record_ok_when_aberto_overdue_and_outside_cooldown() -> None:
+    record = _build_record(vencimento="01-04-2026", ultima_cobranca="01-04-2026")
+
+    decision = evaluate_record(record, today=FIXED_TODAY, cooldown_days=3)
+
+    assert decision.eligible is True
+    assert decision.reason == ""
+    assert decision.dias_atraso == 7
+
+
+def test_evaluate_record_accepts_iso_date_for_backward_compatibility() -> None:
     record = _build_record(vencimento="2026-04-01", ultima_cobranca="2026-04-01")
 
     decision = evaluate_record(record, today=FIXED_TODAY, cooldown_days=3)

@@ -1,5 +1,6 @@
 import csv
 import re
+from datetime import datetime
 from pathlib import Path
 
 from models.client_record import ClientRecord
@@ -33,6 +34,20 @@ def normalize_status(value: str | None) -> str | None:
     if normalized is None:
         return None
     return normalized.upper()
+
+
+def normalize_date_input(value: str | None) -> str | None:
+    normalized = normalize_text(value)
+    if normalized is None:
+        return None
+
+    for date_format in ("%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(normalized, date_format).date().isoformat()
+        except ValueError:
+            continue
+
+    return normalized
 
 
 def parse_valor(value: str | None) -> tuple[float | None, str | None]:
@@ -122,8 +137,8 @@ def load_client_records(csv_path: str) -> tuple[list[ClientRecord], list[str]]:
             cliente_nome = normalize_text(row.get("cliente_nome"))
             email = normalize_text(row.get("email"))
             status = normalize_status(row.get("status"))
-            vencimento = normalize_text(row.get("vencimento"))
-            ultima_cobranca = normalize_text(row.get("ultima_cobranca"))
+            vencimento = normalize_date_input(row.get("vencimento"))
+            ultima_cobranca = normalize_date_input(row.get("ultima_cobranca"))
 
             valor, valor_error = parse_valor(row.get("valor"))
 

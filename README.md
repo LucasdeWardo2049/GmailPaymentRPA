@@ -26,12 +26,13 @@ Cabecalho:
 id,cliente_nome,email,status,valor,vencimento,ultima_cobranca
 
 ## Fluxo
-1. Na Tela 1, informe o diretorio de perfil e clique em "Abrir Gmail e fazer login".
+1. Na Tela 1, clique em "Abrir Gmail e fazer login" (opcionalmente, abra "Configurar diretorio de perfil" para ajustar o Playwright).
 2. Finalize login/2FA manualmente na janela do browser aberta pelo Playwright.
 3. Clique em "Validar sessao" e depois em "Avancar".
 4. Na Tela 2, carregue o CSV, ajuste email/status/valor quando necessario e selecione os destinatarios.
 5. Opcional: clique em "Salvar CSV editado" para exportar os ajustes e status de envio.
 6. Na Tela 3, escolha envio normal ou "Personalizar por cliente (placeholders)", preencha Assunto/Corpo e clique em "Enviar".
+7. Ao finalizar, use "Voltar para Importacao" para retornar direto a Tela 2.
 
 ## CSV Management (Tela 2)
 - Linhas invalidas ficam na tabela com destaque em vermelho e checkbox desabilitado.
@@ -51,6 +52,14 @@ Ao salvar CSV editado, o arquivo inclui as colunas originais e tambem:
 - envio_status
 - envio_erro
 
+## Auditoria de envio
+Ao finalizar cada envio, o app exporta auditoria automaticamente em pasta organizada por data:
+- logs/YYYY-MM-DD/HH-MM-SS_resumo.txt
+- logs/YYYY-MM-DD/HH-MM-SS_detalhado.csv
+- logs/YYYY-MM-DD/HH-MM-SS_log.txt
+
+O resumo contem totais de OK/ERRO/SKIP e o detalhado lista os registros processados.
+
 ## Tela 3 - SKIP, Modos e Placeholders
 - A tabela da Tela 3 possui coluna `motivo` para exibir motivo de SKIP.
 - Registros inelegiveis ficam cinza, com checkbox desabilitado, e nao entram no envio.
@@ -67,11 +76,12 @@ Ao salvar CSV editado, o arquivo inclui as colunas originais e tambem:
 	- Preview por cliente com apenas registros elegiveis selecionados.
 	- Feedback visual quando template estiver invalido.
 - A aba de logs de envio fica oculta e aparece automaticamente quando o envio inicia.
+- Apos concluir o envio, aparece o botao `Voltar para Importacao` para retornar a Tela 2.
 
 ### Regras simples de elegibilidade (SKIP)
 Um registro e elegivel apenas quando:
 - status == ABERTO
-- vencimento valido em YYYY-MM-DD
+- vencimento valido em DD-MM-YYYY (tambem aceita YYYY-MM-DD para compatibilidade)
 - vencimento ja ocorreu (dias_atraso >= 0)
 - se ultima_cobranca existir, respeita cooldown minimo de 3 dias
 
@@ -93,6 +103,6 @@ Body:
 - Ola {cliente_nome},\n\nIdentificamos pendencia no valor de R$ {valor}.\nVencimento: {vencimento}.\nDias em atraso: {dias_atraso}.\n\nFavor regularizar.
 
 ## Observacoes
-- O login e persistido no `userDataDir` informado na Tela 1.
+- O login e persistido no `userDataDir` configurado na opcao avancada da Tela 1.
 - O envio e sequencial (um destinatario por vez).
 - Falhas de envio sao logadas e o processo continua com o proximo cliente.
