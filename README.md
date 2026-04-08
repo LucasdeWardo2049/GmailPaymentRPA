@@ -25,6 +25,9 @@ Cabecalho:
 
 id,cliente_nome,email,status,valor,vencimento,ultima_cobranca(opcional)
 
+Observacao: no import, a coluna `status` pode estar ausente ou vazia. Nesses casos, o sistema preenche
+automaticamente como `ABERTO` (mantendo o campo editavel na Tela 2).
+
 ## Fluxo
 1. Na Tela 1, clique em "Abrir Gmail e fazer login" (opcionalmente, abra "Configurar diretorio de perfil" para ajustar o Playwright).
 2. Finalize login/2FA manualmente na janela do browser aberta pelo Playwright.

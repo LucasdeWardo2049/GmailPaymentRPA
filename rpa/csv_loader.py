@@ -17,6 +17,14 @@ EXPECTED_COLUMNS = [
     "vencimento",
     "ultima_cobranca",
 ]
+IMPORT_REQUIRED_COLUMNS = [
+    "id",
+    "cliente_nome",
+    "email",
+    "valor",
+    "vencimento",
+    "ultima_cobranca",
+]
 EXTRA_EXPORT_COLUMNS = ["enviado_em", "envio_status", "envio_erro"]
 DATE_FIELDS = {"vencimento", "ultima_cobranca"}
 
@@ -56,6 +64,38 @@ def normalize_date_input(value: object | None) -> str | None:
             continue
 
     return normalized
+
+
+def _parse_iso_date(raw_value: str | None) -> date | None:
+    if raw_value is None:
+        return None
+
+    candidate = raw_value.strip()
+    if not candidate:
+        return None
+
+    try:
+        return datetime.strptime(candidate, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def infer_status_from_due_date(
+    status_value: object | None,
+    vencimento: str | None,
+    today: date | None = None,
+) -> str:
+    normalized_status = normalize_status(status_value)
+    if normalized_status is not None:
+        return normalized_status
+
+    today_value = today or date.today()
+    vencimento_date = _parse_iso_date(vencimento)
+
+    # Import sem status: considera registro em aberto, usando vencimento como referencia temporal.
+    if vencimento_date is not None and vencimento_date <= today_value:
+        return "ABERTO"
+    return "ABERTO"
 
 
 def parse_valor(value: object | None) -> tuple[float | None, str | None]:
@@ -127,11 +167,16 @@ def _record_to_csv_row(record: ClientRecord, include_send_columns: bool) -> dict
     return row
 
 
-def _validate_required_columns(fieldnames: list[str] | None, source_label: str) -> None:
+def _validate_required_columns(
+    fieldnames: list[str] | None,
+    source_label: str,
+    required_columns: list[str] | None = None,
+) -> None:
     if fieldnames is None:
         raise ValueError(f"{source_label} sem cabecalho.")
 
-    missing_columns = [column for column in EXPECTED_COLUMNS if column not in fieldnames]
+    columns_to_check = required_columns or EXPECTED_COLUMNS
+    missing_columns = [column for column in columns_to_check if column not in fieldnames]
     if missing_columns:
         missing = ", ".join(missing_columns)
         raise ValueError(f"{source_label} sem colunas obrigatorias: {missing}")
@@ -149,9 +194,9 @@ def _load_records_from_rows(
         row_id = normalize_text(row.get("id"))
         cliente_nome = normalize_text(row.get("cliente_nome"))
         email = normalize_text(row.get("email"))
-        status = normalize_status(row.get("status"))
         vencimento = normalize_date_input(row.get("vencimento"))
         ultima_cobranca = normalize_date_input(row.get("ultima_cobranca"))
+        status = infer_status_from_due_date(row.get("status"), vencimento)
 
         valor, valor_error = parse_valor(row.get("valor"))
 
@@ -218,7 +263,11 @@ def load_client_records(csv_path: str) -> tuple[list[ClientRecord], list[str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as csv_file:
         reader = csv.DictReader(csv_file)
 
-        _validate_required_columns(reader.fieldnames, source_label="CSV")
+        _validate_required_columns(
+            reader.fieldnames,
+            source_label="CSV",
+            required_columns=IMPORT_REQUIRED_COLUMNS,
+        )
 
         rows = (
             (line_number, row)
@@ -256,7 +305,11 @@ def load_client_records_from_xlsx(
             raise ValueError("XLSX sem cabecalho.")
 
         fieldnames = [normalize_text(cell.value) or "" for cell in header_cells]
-        _validate_required_columns(fieldnames, source_label="XLSX")
+        _validate_required_columns(
+            fieldnames,
+            source_label="XLSX",
+            required_columns=IMPORT_REQUIRED_COLUMNS,
+        )
 
         def iter_rows() -> Iterable[tuple[int, dict[str, object | None]]]:
             for line_number, row_cells in enumerate(rows_iter, start=1):
