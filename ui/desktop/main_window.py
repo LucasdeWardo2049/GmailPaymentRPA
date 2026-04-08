@@ -237,7 +237,7 @@ class LoginPage(QWidget):
         self.validate_button.setToolTip("Verifica se a sessao salva ainda esta valida")
         self.next_button.setToolTip("Ir para a etapa de CSV apos sessao valida")
 
-        self.status_label = QLabel("Sessao nao validada.")
+        self.status_label = QLabel("Status: sessao nao validada.")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setWordWrap(True)
 
@@ -279,15 +279,15 @@ class LoginPage(QWidget):
         self.next_button.setEnabled((not busy) and self._session_valid)
 
     def set_status(self, text: str) -> None:
-        self.status_label.setText(text)
+        self.status_label.setText(f"Status: {text}")
 
     def set_session_valid(self, valid: bool) -> None:
         self._session_valid = valid
         self.next_button.setEnabled(valid)
         if valid:
-            self.status_label.setText("Sessao valida. Pode avancar.")
+            self.status_label.setText("Status: sessao valida. Pode avancar.")
         else:
-            self.status_label.setText("Sessao invalida ou expirada.")
+            self.status_label.setText("Status: sessao invalida ou expirada.")
 
     def get_profile_dir(self) -> str:
         profile_dir = self.profile_dir_edit.text().strip()
@@ -357,12 +357,14 @@ class CsvPage(QWidget):
             | QAbstractItemView.EditKeyPressed
         )
         self.table.setToolTip("Duplo clique em cliente_nome, email, status ou valor para editar")
+        self.table.setAccessibleName("Tabela de registros do CSV")
 
         self.rejected_box = QPlainTextEdit()
         self.rejected_box.setReadOnly(True)
         self.rejected_box.setPlaceholderText("Rejeitados/invalidos por linha")
         self.rejected_box.setMaximumHeight(120)
         self.rejected_box.setToolTip("Lista de linhas com problemas de validacao")
+        self.rejected_box.setAccessibleName("Lista de linhas invalidas")
 
         top_buttons = QHBoxLayout()
         top_buttons.addWidget(self.select_csv_button)
@@ -393,7 +395,7 @@ class CsvPage(QWidget):
         self.selected_file_label.setText(f"Arquivo: {path}")
 
     def set_counts(self, total: int, valid: int, selected: int) -> None:
-        self.count_label.setText(f"Total: {total} | Validos: {valid} | Selecionados: {selected}")
+        self.count_label.setText(f"Resumo CSV - Total: {total} | Validos: {valid} | Selecionados: {selected}")
 
     def set_next_enabled(self, enabled: bool) -> None:
         self.next_button.setEnabled(enabled)
@@ -407,13 +409,11 @@ class CsvPage(QWidget):
     def populate_records(self, records: list[ClientRecord]) -> None:
         self._updating_table = True
         try:
-            self.table.setSortingEnabled(False)
             self.table.setRowCount(len(records))
             for row_index, record in enumerate(records):
                 self._render_row(row_index, record)
         finally:
             self._updating_table = False
-            self.table.setSortingEnabled(True)
 
     def refresh_row(self, row_index: int, record: ClientRecord) -> None:
         self._updating_table = True
@@ -529,6 +529,8 @@ class SendPage(QWidget):
     subject_changed = Signal(str)
     body_changed = Signal(str)
     selection_changed = Signal()
+    select_all_eligible_clicked = Signal()
+    clear_selection_clicked = Signal()
 
     SEND_HEADERS = ["Enviar", *EXPECTED_COLUMNS, "motivo"]
 
@@ -553,30 +555,65 @@ class SendPage(QWidget):
 
         self.back_button = QPushButton("Voltar")
         self.send_button = QPushButton("Enviar")
+        self.select_all_button = QPushButton("Selecionar elegiveis")
+        self.clear_selection_button = QPushButton("Limpar selecao")
         self.per_client_checkbox = QCheckBox("Personalizar por cliente (placeholders)")
         self.per_client_checkbox.setChecked(False)
+        self.per_client_checkbox.setToolTip(
+            "Ative para usar placeholders por cliente, como {cliente_nome} e {dias_atraso}"
+        )
+        self.select_all_button.setToolTip("Marcar todos os destinatarios elegiveis")
+        self.clear_selection_button.setToolTip("Desmarcar todos os destinatarios")
+        self.send_button.setToolTip("Iniciar envio")
 
         self.selected_label = QLabel("Destinatarios selecionados: 0")
+        self.selected_label.setWordWrap(True)
 
         self.table = QTableWidget(0, len(self.SEND_HEADERS))
         self.table.setHorizontalHeaderLabels(self.SEND_HEADERS)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(self.SEND_COL_SELECT, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.SEND_COL_ID, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.SEND_COL_STATUS, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.SEND_COL_VALOR, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setToolTip("Linhas cinza sao SKIP por regra e nao podem ser enviadas")
+        self.table.setAccessibleName("Tabela de envio com motivo de skip")
 
         self.subject_edit = QLineEdit()
         self.subject_edit.setPlaceholderText("Assunto global do lote")
+        self.subject_edit.setToolTip("No modo per-client, este campo aceita placeholders")
+        self.subject_edit.setAccessibleName("Campo assunto")
 
         self.body_edit = QPlainTextEdit()
         self.body_edit.setPlaceholderText("Corpo global do lote")
+        self.body_edit.setToolTip("No modo per-client, este campo aceita placeholders")
+        self.body_edit.setAccessibleName("Campo corpo da mensagem")
 
         self.logs_box = QPlainTextEdit()
         self.logs_box.setReadOnly(True)
         self.logs_box.setMaximumHeight(190)
         self.logs_box.setPlaceholderText("Logs de envio")
+        self.logs_box.setAccessibleName("Area de logs de envio")
+
+        self.placeholder_help_label = QLabel(
+            "Placeholders disponiveis: {cliente_nome}, {valor}, {vencimento}, {dias_atraso}, {record_id}"
+        )
+        self.placeholder_help_label.setWordWrap(True)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
 
         top_buttons = QHBoxLayout()
         top_buttons.addWidget(self.back_button)
+        top_buttons.addWidget(self.select_all_button)
+        top_buttons.addWidget(self.clear_selection_button)
         top_buttons.addStretch()
         top_buttons.addWidget(self.per_client_checkbox)
         top_buttons.addWidget(self.send_button)
@@ -590,12 +627,16 @@ class SendPage(QWidget):
         layout.addLayout(top_buttons)
         layout.addWidget(self.selected_label)
         layout.addWidget(self.table)
+        layout.addWidget(self.placeholder_help_label)
         layout.addLayout(form)
         layout.addWidget(QLabel("Logs"))
         layout.addWidget(self.logs_box)
+        layout.addWidget(self.progress_bar)
 
         self.back_button.clicked.connect(self.back_clicked.emit)
         self.send_button.clicked.connect(self._emit_send)
+        self.select_all_button.clicked.connect(self.select_all_eligible_clicked.emit)
+        self.clear_selection_button.clicked.connect(self.clear_selection_clicked.emit)
         self.subject_edit.textChanged.connect(self.subject_changed.emit)
         self.body_edit.textChanged.connect(lambda: self.body_changed.emit(self.body_edit.toPlainText()))
         self.table.itemChanged.connect(self._on_item_changed)
@@ -635,6 +676,36 @@ class SendPage(QWidget):
     def is_per_client_enabled(self) -> bool:
         return self.per_client_checkbox.isChecked()
 
+    def select_all_eligible(self) -> None:
+        self._updating_table = True
+        try:
+            for row_index in range(self.table.rowCount()):
+                checkbox = self.table.item(row_index, self.SEND_COL_SELECT)
+                if checkbox is None:
+                    continue
+                if not (checkbox.flags() & Qt.ItemIsEnabled):
+                    continue
+                checkbox.setCheckState(Qt.Checked)
+        finally:
+            self._updating_table = False
+
+        self._update_selected_label()
+        self.selection_changed.emit()
+
+    def clear_selection(self) -> None:
+        self._updating_table = True
+        try:
+            for row_index in range(self.table.rowCount()):
+                checkbox = self.table.item(row_index, self.SEND_COL_SELECT)
+                if checkbox is None:
+                    continue
+                checkbox.setCheckState(Qt.Unchecked)
+        finally:
+            self._updating_table = False
+
+        self._update_selected_label()
+        self.selection_changed.emit()
+
     def set_subject(self, subject: str) -> None:
         if self.subject_edit.text() == subject:
             return
@@ -662,10 +733,18 @@ class SendPage(QWidget):
         self._is_busy = busy
         self.send_button.setEnabled(not busy)
         self.back_button.setEnabled(not busy)
+        self.select_all_button.setEnabled(not busy)
+        self.clear_selection_button.setEnabled(not busy)
         self.per_client_checkbox.setEnabled(not busy)
         self.table.setEnabled(not busy)
         self.subject_edit.setEnabled(not busy)
         self.body_edit.setEnabled(not busy)
+        self.progress_bar.setVisible(busy)
+        if busy:
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
 
     def _emit_send(self) -> None:
         subject = self.subject_edit.text().strip()
@@ -746,6 +825,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("MVP Gmail RPA")
         self.resize(1260, 820)
+        self.setMinimumSize(1024, 700)
+        self.setStyleSheet(APP_STYLESHEET)
+        self.statusBar().showMessage("Pronto")
 
         self.logged_in = False
         self.records_loaded = False
@@ -770,6 +852,24 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.send_page)
 
         self._connect_signals()
+        self._setup_shortcuts()
+
+    def _setup_shortcuts(self) -> None:
+        self.shortcut_load_csv = QShortcut(QKeySequence("Ctrl+L"), self)
+        self.shortcut_load_csv.activated.connect(self._select_csv)
+
+        self.shortcut_save_csv = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.shortcut_save_csv.activated.connect(self._save_csv)
+
+        self.shortcut_send = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self.shortcut_send.activated.connect(self._trigger_send_shortcut)
+
+    def _trigger_send_shortcut(self) -> None:
+        if self.stack.currentWidget() is not self.send_page:
+            return
+        if not self.send_page.send_button.isEnabled():
+            return
+        self.send_page.send_button.click()
 
     def _connect_signals(self) -> None:
         self.login_page.open_login_clicked.connect(self._open_gmail_for_login)
@@ -778,6 +878,8 @@ class MainWindow(QMainWindow):
 
         self.csv_page.select_csv_clicked.connect(self._select_csv)
         self.csv_page.save_csv_clicked.connect(self._save_csv)
+        self.csv_page.select_all_valid_clicked.connect(self._select_all_valid_csv)
+        self.csv_page.clear_selection_clicked.connect(self._clear_csv_selection)
         self.csv_page.next_clicked.connect(self._go_to_send)
         self.csv_page.cell_edited.connect(self._on_csv_cell_edited)
         self.csv_page.selection_toggled.connect(self._on_csv_selection_toggled)
@@ -786,6 +888,8 @@ class MainWindow(QMainWindow):
         self.send_page.subject_changed.connect(self._on_subject_changed)
         self.send_page.body_changed.connect(self._on_body_changed)
         self.send_page.selection_changed.connect(self._refresh_send_state)
+        self.send_page.select_all_eligible_clicked.connect(self._select_all_send)
+        self.send_page.clear_selection_clicked.connect(self._clear_send_selection)
         self.send_page.send_clicked.connect(self._send_emails)
 
     def _open_gmail_for_login(self, profile_dir: str, headless: bool) -> None:
@@ -832,6 +936,7 @@ class MainWindow(QMainWindow):
         if not self.logged_in:
             QMessageBox.warning(self, "Sessao invalida", "Valide a sessao Gmail antes de avancar.")
             return
+        self.statusBar().showMessage("Tela 2 aberta: carregue e revise o CSV")
         self.stack.setCurrentWidget(self.csv_page)
 
     def _select_csv(self) -> None:
@@ -869,6 +974,7 @@ class MainWindow(QMainWindow):
             )
 
         self._refresh_csv_state()
+        self.statusBar().showMessage(f"CSV carregado: {len(records)} registro(s)")
 
     def _save_csv(self) -> None:
         if not self.records:
@@ -895,6 +1001,27 @@ class MainWindow(QMainWindow):
             return
 
         QMessageBox.information(self, "CSV salvo", f"Arquivo salvo em:\n{output_path}")
+        self.statusBar().showMessage("CSV editado salvo com sucesso", 5000)
+
+    def _select_all_valid_csv(self) -> None:
+        if not self.records:
+            return
+
+        for record in self.records:
+            record.selected = bool(record.is_valid)
+
+        self.csv_page.populate_records(self.records)
+        self._refresh_csv_state()
+
+    def _clear_csv_selection(self) -> None:
+        if not self.records:
+            return
+
+        for record in self.records:
+            record.selected = False
+
+        self.csv_page.populate_records(self.records)
+        self._refresh_csv_state()
 
     def _on_csv_selection_toggled(self, row_index: int, checked: bool) -> None:
         if row_index < 0 or row_index >= len(self.records):
@@ -990,10 +1117,20 @@ class MainWindow(QMainWindow):
         self.send_page.set_body(self.body)
         self._refresh_send_state()
 
+        self.statusBar().showMessage("Tela 3 aberta: configure mensagem e envie", 5000)
         self.stack.setCurrentWidget(self.send_page)
 
     def _back_to_csv(self) -> None:
+        self.statusBar().showMessage("Retornou para Tela 2")
         self.stack.setCurrentWidget(self.csv_page)
+
+    def _select_all_send(self) -> None:
+        self.send_page.select_all_eligible()
+        self._refresh_send_state()
+
+    def _clear_send_selection(self) -> None:
+        self.send_page.clear_selection()
+        self._refresh_send_state()
 
     def _on_subject_changed(self, text: str) -> None:
         self.subject = text.strip()
@@ -1040,6 +1177,7 @@ class MainWindow(QMainWindow):
         mode_label = "per-client" if per_client else "lote unico"
         self.send_page.append_log(f"Iniciando envio para {len(records)} destinatario(s) [{mode_label}]...")
         self.send_page.set_busy(True)
+        self.statusBar().showMessage("Envio em andamento...")
 
         worker = SendEmailsThread(sender, records, self.subject, self.body, per_client=per_client)
         self._send_worker = worker
@@ -1114,19 +1252,33 @@ class MainWindow(QMainWindow):
         self.send_page.set_busy(False)
         self._send_worker = None
         self._refresh_send_state()
+        self.statusBar().showMessage("Envio finalizado", 5000)
 
     def _selected_records(self) -> list[ClientRecord]:
         return [record for record in self.records if record.is_valid and record.selected]
 
     def _refresh_send_state(self) -> None:
-        can_send = (
-            self.logged_in
-            and self.send_page.selected_count() > 0
-            and bool(self.subject.strip())
-            and bool(self.body.strip())
-            and (self._send_worker is None or not self._send_worker.isRunning())
-        )
+        reason = "Pronto para enviar"
+        can_send = True
+
+        if not self.logged_in:
+            can_send = False
+            reason = "Valide a sessao do Gmail na Tela 1"
+        elif self.send_page.selected_count() == 0:
+            can_send = False
+            reason = "Selecione ao menos um destinatario elegivel"
+        elif not self.subject.strip():
+            can_send = False
+            reason = "Preencha o assunto"
+        elif not self.body.strip():
+            can_send = False
+            reason = "Preencha o corpo da mensagem"
+        elif self._send_worker is not None and self._send_worker.isRunning():
+            can_send = False
+            reason = "Envio em andamento"
+
         self.send_page.set_send_enabled(can_send)
+        self.send_page.send_button.setToolTip(reason)
 
     def _start_worker(
         self,
