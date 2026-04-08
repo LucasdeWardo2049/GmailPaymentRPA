@@ -1,7 +1,8 @@
 import csv
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from typing import Iterable, Mapping
 
 from models.client_record import ClientRecord
 
@@ -17,26 +18,33 @@ EXPECTED_COLUMNS = [
     "ultima_cobranca",
 ]
 EXTRA_EXPORT_COLUMNS = ["enviado_em", "envio_status", "envio_erro"]
+DATE_FIELDS = {"vencimento", "ultima_cobranca"}
 
 
-def normalize_text(value: str | None) -> str | None:
+def normalize_text(value: object | None) -> str | None:
     if value is None:
         return None
 
-    normalized = value.strip()
+    normalized = value.strip() if isinstance(value, str) else str(value).strip()
     if not normalized:
         return None
     return normalized
 
 
-def normalize_status(value: str | None) -> str | None:
+def normalize_status(value: object | None) -> str | None:
     normalized = normalize_text(value)
     if normalized is None:
         return None
     return normalized.upper()
 
 
-def normalize_date_input(value: str | None) -> str | None:
+def normalize_date_input(value: object | None) -> str | None:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+
+    if isinstance(value, date):
+        return value.isoformat()
+
     normalized = normalize_text(value)
     if normalized is None:
         return None
@@ -50,7 +58,13 @@ def normalize_date_input(value: str | None) -> str | None:
     return normalized
 
 
-def parse_valor(value: str | None) -> tuple[float | None, str | None]:
+def parse_valor(value: object | None) -> tuple[float | None, str | None]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        parsed = float(value)
+        if parsed < 0:
+            return None, "valor deve ser maior ou igual a zero"
+        return parsed, None
+
     normalized = normalize_text(value)
     if normalized is None:
         return None, None
@@ -113,6 +127,89 @@ def _record_to_csv_row(record: ClientRecord, include_send_columns: bool) -> dict
     return row
 
 
+def _validate_required_columns(fieldnames: list[str] | None, source_label: str) -> None:
+    if fieldnames is None:
+        raise ValueError(f"{source_label} sem cabecalho.")
+
+    missing_columns = [column for column in EXPECTED_COLUMNS if column not in fieldnames]
+    if missing_columns:
+        missing = ", ".join(missing_columns)
+        raise ValueError(f"{source_label} sem colunas obrigatorias: {missing}")
+
+
+def _load_records_from_rows(
+    rows: Iterable[tuple[int, Mapping[str, object | None]]],
+) -> tuple[list[ClientRecord], list[str]]:
+    records: list[ClientRecord] = []
+    rejected_rows: list[str] = []
+    used_ids: set[str] = set()
+    next_auto_id = 1
+
+    for line_number, row in rows:
+        row_id = normalize_text(row.get("id"))
+        cliente_nome = normalize_text(row.get("cliente_nome"))
+        email = normalize_text(row.get("email"))
+        status = normalize_status(row.get("status"))
+        vencimento = normalize_date_input(row.get("vencimento"))
+        ultima_cobranca = normalize_date_input(row.get("ultima_cobranca"))
+
+        valor, valor_error = parse_valor(row.get("valor"))
+
+        reasons: list[str] = []
+        if row_id is None:
+            while str(next_auto_id) in used_ids:
+                next_auto_id += 1
+            row_id = str(next_auto_id)
+            used_ids.add(row_id)
+            next_auto_id += 1
+        else:
+            used_ids.add(row_id)
+            if row_id.isdigit():
+                numeric_id = int(row_id)
+                if numeric_id >= next_auto_id:
+                    next_auto_id = numeric_id + 1
+
+        reasons.extend(validate_record_fields(email, status, valor))
+        if valor_error:
+            reasons.append(valor_error)
+
+        is_valid = len(reasons) == 0
+        observacao_erro = "; ".join(reasons)
+        selected = is_valid and status == "ABERTO"
+
+        record = ClientRecord(
+            id=row_id,
+            cliente_nome=cliente_nome,
+            email=email,
+            status=status,
+            valor=valor,
+            vencimento=vencimento,
+            ultima_cobranca=ultima_cobranca,
+            observacao_erro=observacao_erro,
+            is_valid=is_valid,
+            selected=selected,
+        )
+        records.append(record)
+
+        if not is_valid:
+            rejected_rows.append(f"Linha {line_number}: {observacao_erro}")
+
+    return records, rejected_rows
+
+
+def _normalize_excel_field_value(field_name: str, value: object | None) -> object | None:
+    if value is None:
+        return None
+
+    if field_name in DATE_FIELDS:
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+
+    return value
+
+
 def load_client_records(csv_path: str) -> tuple[list[ClientRecord], list[str]]:
     path = Path(csv_path)
     if not path.exists():
@@ -121,58 +218,75 @@ def load_client_records(csv_path: str) -> tuple[list[ClientRecord], list[str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as csv_file:
         reader = csv.DictReader(csv_file)
 
-        if reader.fieldnames is None:
-            raise ValueError("CSV sem cabecalho.")
+        _validate_required_columns(reader.fieldnames, source_label="CSV")
 
-        missing_columns = [column for column in EXPECTED_COLUMNS if column not in reader.fieldnames]
-        if missing_columns:
-            missing = ", ".join(missing_columns)
-            raise ValueError(f"CSV sem colunas obrigatorias: {missing}")
+        rows = (
+            (line_number, row)
+            for line_number, row in enumerate(reader, start=1)
+        )
 
-        records: list[ClientRecord] = []
-        rejected_rows: list[str] = []
+        return _load_records_from_rows(rows)
 
-        for line_number, row in enumerate(reader, start=2):
-            row_id = normalize_text(row.get("id"))
-            cliente_nome = normalize_text(row.get("cliente_nome"))
-            email = normalize_text(row.get("email"))
-            status = normalize_status(row.get("status"))
-            vencimento = normalize_date_input(row.get("vencimento"))
-            ultima_cobranca = normalize_date_input(row.get("ultima_cobranca"))
 
-            valor, valor_error = parse_valor(row.get("valor"))
+def load_client_records_from_xlsx(
+    xlsx_path: str,
+    sheet_name: str | None = None,
+) -> tuple[list[ClientRecord], list[str]]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as error:  # pragma: no cover - protegido por requirements
+        raise ImportError("Dependencia openpyxl nao encontrada. Instale openpyxl>=3.1.0.") from error
 
-            reasons: list[str] = []
-            if row_id is None:
-                reasons.append("id invalido")
-                row_id = f"linha-{line_number}"
+    path = Path(xlsx_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Arquivo nao encontrado: {xlsx_path}")
 
-            reasons.extend(validate_record_fields(email, status, valor))
-            if valor_error:
-                reasons.append(valor_error)
+    workbook = load_workbook(path, data_only=True, read_only=True)
+    try:
+        if sheet_name is None:
+            worksheet = workbook.active
+        else:
+            if sheet_name not in workbook.sheetnames:
+                raise ValueError(f"Aba nao encontrada no XLSX: {sheet_name}")
+            worksheet = workbook[sheet_name]
 
-            is_valid = len(reasons) == 0
-            observacao_erro = "; ".join(reasons)
-            selected = is_valid and status == "ABERTO"
+        rows_iter = worksheet.iter_rows(min_row=1, values_only=False)
+        header_cells = next(rows_iter, None)
+        if header_cells is None:
+            raise ValueError("XLSX sem cabecalho.")
 
-            record = ClientRecord(
-                id=row_id,
-                cliente_nome=cliente_nome,
-                email=email,
-                status=status,
-                valor=valor,
-                vencimento=vencimento,
-                ultima_cobranca=ultima_cobranca,
-                observacao_erro=observacao_erro,
-                is_valid=is_valid,
-                selected=selected,
-            )
-            records.append(record)
+        fieldnames = [normalize_text(cell.value) or "" for cell in header_cells]
+        _validate_required_columns(fieldnames, source_label="XLSX")
 
-            if not is_valid:
-                rejected_rows.append(f"Linha {line_number}: {observacao_erro}")
+        def iter_rows() -> Iterable[tuple[int, dict[str, object | None]]]:
+            for line_number, row_cells in enumerate(rows_iter, start=1):
+                row_data: dict[str, object | None] = {}
+                for index, field_name in enumerate(fieldnames):
+                    if not field_name:
+                        continue
 
-    return records, rejected_rows
+                    value = row_cells[index].value if index < len(row_cells) else None
+                    row_data[field_name] = _normalize_excel_field_value(field_name, value)
+
+                yield line_number, row_data
+
+        return _load_records_from_rows(iter_rows())
+    finally:
+        workbook.close()
+
+
+def load_client_records_from_file(
+    file_path: str,
+    sheet_name: str | None = None,
+) -> tuple[list[ClientRecord], list[str]]:
+    extension = Path(file_path).suffix.lower()
+    if extension == ".csv":
+        return load_client_records(file_path)
+
+    if extension == ".xlsx":
+        return load_client_records_from_xlsx(file_path, sheet_name=sheet_name)
+
+    raise ValueError("Formato de arquivo nao suportado. Use .csv ou .xlsx.")
 
 
 def save_client_records(csv_path: str, records: list[ClientRecord], include_send_columns: bool = True) -> None:

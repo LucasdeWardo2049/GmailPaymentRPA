@@ -2,7 +2,7 @@
 
 MVP com 3 telas:
 1. Login Gmail (sessao persistente)
-2. CSV Management (import, edicao, cores e selecao)
+2. Importacao e Revisao (CSV/XLSX, edicao, cores e selecao)
 3. Personalizacao de mensagem e envio (normal ou per-client)
 
 ## Requisitos
@@ -20,7 +20,7 @@ playwright install chromium
 python app.py
 ```
 
-## CSV esperado
+## Arquivo esperado (CSV ou XLSX)
 Cabecalho:
 
 id,cliente_nome,email,status,valor,vencimento,ultima_cobranca(opcional)
@@ -29,12 +29,15 @@ id,cliente_nome,email,status,valor,vencimento,ultima_cobranca(opcional)
 1. Na Tela 1, clique em "Abrir Gmail e fazer login" (opcionalmente, abra "Configurar diretorio de perfil" para ajustar o Playwright).
 2. Finalize login/2FA manualmente na janela do browser aberta pelo Playwright.
 3. Clique em "Validar sessao" e depois em "Avancar".
-4. Na Tela 2, carregue o CSV, ajuste email/status/valor quando necessario e selecione os destinatarios.
+4. Na Tela 2, carregue o arquivo CSV ou XLSX, ajuste email/status/valor quando necessario e selecione os destinatarios.
 5. Opcional: clique em "Salvar CSV editado" para exportar os ajustes e status de envio.
 6. Na Tela 3, escolha envio normal ou "Personalizar por cliente (placeholders)", preencha Assunto/Corpo e clique em "Enviar".
 7. Ao finalizar, use "Voltar para Importacao" para retornar direto a Tela 2.
 
-## CSV Management (Tela 2)
+## Importacao e Revisao (Tela 2)
+- Importa arquivos `.csv` e `.xlsx` (primeira aba do Excel por padrao).
+- Em XLSX, datas em formato Excel (date/datetime) sao normalizadas para YYYY-MM-DD.
+- Em XLSX, valores numericos sao aceitos diretamente no campo `valor`.
 - Linhas invalidas ficam na tabela com destaque em vermelho e checkbox desabilitado.
 - Linhas ABERTO validas ficam marcadas por padrao.
 - Linhas PAGO/CANCELADO ficam desmarcadas por padrao.
