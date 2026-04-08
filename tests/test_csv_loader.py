@@ -15,7 +15,7 @@ def test_load_client_records_accepts_valid_rows(tmp_path: Path) -> None:
     csv_path = _write_csv(
         tmp_path,
         "id,cliente_nome,email,status,valor,vencimento,ultima_cobranca\n"
-        "1,Joao,joao@example.com,ABERTO,199.90,2026-04-01,\n",
+        "1,Joao,joao@example.com,ABERTO,199.90,01-04-2026,\n",
     )
 
     records, rejected_rows = load_client_records(csv_path)
@@ -23,8 +23,24 @@ def test_load_client_records_accepts_valid_rows(tmp_path: Path) -> None:
     assert len(records) == 1
     assert rejected_rows == []
     assert records[0].id == "1"
+    assert records[0].vencimento == "2026-04-01"
     assert records[0].is_valid is True
     assert records[0].selected is True
+
+
+def test_load_client_records_normalizes_mixed_date_formats(tmp_path: Path) -> None:
+    csv_path = _write_csv(
+        tmp_path,
+        "id,cliente_nome,email,status,valor,vencimento,ultima_cobranca\n"
+        "10,Ana,ana@example.com,ABERTO,100.00,2026-04-08,07-04-2026\n",
+    )
+
+    records, rejected_rows = load_client_records(csv_path)
+
+    assert len(records) == 1
+    assert rejected_rows == []
+    assert records[0].vencimento == "2026-04-08"
+    assert records[0].ultima_cobranca == "2026-04-07"
 
 
 def test_load_client_records_rejects_invalid_id(tmp_path: Path) -> None:

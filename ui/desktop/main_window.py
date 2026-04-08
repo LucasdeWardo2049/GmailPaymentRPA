@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHeaderView,
@@ -41,6 +43,7 @@ from rpa.csv_loader import (
     validate_record_fields,
 )
 from services.gmail_playwright_sender import GmailPlaywrightSender
+from services.audit_exporter import export_send_audit
 from services.message_composer import (
     SUPPORTED_PLACEHOLDERS,
     compose_from_user_templates,
@@ -252,17 +255,15 @@ class LoginPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._session_valid = False
+        self._profile_dir = str(Path("playwright-profile").resolve())
 
         title = QLabel("Tela 1/3 - Login Gmail")
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
 
-        self.profile_dir_edit = QLineEdit(str(Path("playwright-profile").resolve()))
-        self.profile_dir_edit.setClearButtonEnabled(True)
-        self.profile_dir_edit.setPlaceholderText("Informe ou selecione a pasta de perfil do navegador")
-        self.profile_dir_edit.setAccessibleName("Diretorio do perfil Playwright")
-        self.profile_dir_edit.setToolTip("Pasta usada para manter o login do Gmail entre execucoes")
-        self.browse_profile_button = QPushButton("Escolher pasta")
-        self.browse_profile_button.setToolTip("Selecionar pasta de perfil")
+        self.profile_settings_button = QPushButton("Configurar diretorio de perfil (opcional)")
+        self.profile_settings_button.setToolTip(
+            "Abre um modal para configurar a pasta de perfil usada para manter login no Gmail"
+        )
         self.headless_checkbox = QCheckBox("Headless")
         self.headless_checkbox.setChecked(False)
         self.headless_checkbox.setToolTip("Use apenas para testes. No modo visivel o login manual e mais confiavel")
@@ -280,15 +281,7 @@ class LoginPage(QWidget):
         self.status_label.setWordWrap(True)
 
         form = QFormLayout()
-        profile_row = QHBoxLayout()
-        profile_row.setContentsMargins(0, 0, 0, 0)
-        profile_row.addWidget(self.profile_dir_edit)
-        profile_row.addWidget(self.browse_profile_button)
-
-        profile_row_widget = QWidget()
-        profile_row_widget.setLayout(profile_row)
-
-        form.addRow("Diretorio do perfil Playwright", profile_row_widget)
+        form.addRow("Playwright (avancado)", self.profile_settings_button)
         form.addRow("", self.headless_checkbox)
 
         buttons = QHBoxLayout()
@@ -306,11 +299,11 @@ class LoginPage(QWidget):
 
         self.open_login_button.clicked.connect(self._emit_open_login)
         self.validate_button.clicked.connect(self._emit_validate)
-        self.browse_profile_button.clicked.connect(self._choose_profile_dir)
+        self.profile_settings_button.clicked.connect(self._open_profile_dir_modal)
         self.next_button.clicked.connect(self.next_clicked.emit)
 
     def set_busy(self, busy: bool) -> None:
-        self.profile_dir_edit.setEnabled(not busy)
+        self.profile_settings_button.setEnabled(not busy)
         self.headless_checkbox.setEnabled(not busy)
         self.open_login_button.setEnabled(not busy)
         self.validate_button.setEnabled(not busy)
@@ -328,7 +321,7 @@ class LoginPage(QWidget):
             self.status_label.setText("Status: sessao invalida ou expirada.")
 
     def get_profile_dir(self) -> str:
-        profile_dir = self.profile_dir_edit.text().strip()
+        profile_dir = self._profile_dir.strip()
         if profile_dir:
             return profile_dir
         return str(Path("playwright-profile").resolve())
@@ -339,10 +332,53 @@ class LoginPage(QWidget):
     def _emit_validate(self) -> None:
         self.validate_clicked.emit(self.get_profile_dir(), self.headless_checkbox.isChecked())
 
-    def _choose_profile_dir(self) -> None:
-        selected = QFileDialog.getExistingDirectory(self, "Selecionar diretorio de perfil", self.get_profile_dir())
-        if selected:
-            self.profile_dir_edit.setText(selected)
+    def _open_profile_dir_modal(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Diretorio do perfil Playwright")
+        dialog.setModal(True)
+
+        layout = QVBoxLayout(dialog)
+        description = QLabel(
+            "Defina a pasta usada para armazenar sessao, cookies e dados do navegador entre execucoes."
+        )
+        description.setWordWrap(True)
+
+        profile_dir_edit = QLineEdit(self.get_profile_dir())
+        profile_dir_edit.setClearButtonEnabled(True)
+        profile_dir_edit.setPlaceholderText("Informe ou selecione a pasta de perfil do navegador")
+
+        browse_button = QPushButton("Escolher pasta")
+        browse_button.setToolTip("Selecionar pasta de perfil")
+
+        profile_row = QHBoxLayout()
+        profile_row.setContentsMargins(0, 0, 0, 0)
+        profile_row.addWidget(profile_dir_edit)
+        profile_row.addWidget(browse_button)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+
+        layout.addWidget(description)
+        layout.addLayout(profile_row)
+        layout.addWidget(buttons)
+
+        def choose_profile_dir() -> None:
+            selected = QFileDialog.getExistingDirectory(
+                dialog,
+                "Selecionar diretorio de perfil",
+                profile_dir_edit.text().strip() or self.get_profile_dir(),
+            )
+            if selected:
+                profile_dir_edit.setText(selected)
+
+        browse_button.clicked.connect(choose_profile_dir)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        selected_profile = profile_dir_edit.text().strip()
+        self._profile_dir = selected_profile or str(Path("playwright-profile").resolve())
 
 
 class CsvPage(QWidget):
@@ -570,6 +606,7 @@ class CsvPage(QWidget):
 
 class SendPage(QWidget):
     back_clicked = Signal()
+    back_to_import_clicked = Signal()
     send_clicked = Signal(str, str, bool)
     subject_changed = Signal(str)
     body_changed = Signal(str)
@@ -650,6 +687,9 @@ class SendPage(QWidget):
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
 
         self.back_button = QPushButton("Voltar")
+        self.back_to_import_button = QPushButton("Voltar para Importacao")
+        self.back_to_import_button.setVisible(False)
+        self.back_to_import_button.setToolTip("Exibe apos finalizar para retornar a Tela 2")
         self.send_button = QPushButton("Enviar")
         self.select_all_button = QPushButton("Selecionar elegiveis")
         self.clear_selection_button = QPushButton("Limpar selecao")
@@ -757,6 +797,7 @@ class SendPage(QWidget):
 
         top_buttons = QHBoxLayout()
         top_buttons.addWidget(self.back_button)
+        top_buttons.addWidget(self.back_to_import_button)
         top_buttons.addWidget(self.select_all_button)
         top_buttons.addWidget(self.clear_selection_button)
         top_buttons.addStretch()
@@ -838,6 +879,7 @@ class SendPage(QWidget):
         layout.addWidget(self.bottom_tabs, 1)
 
         self.back_button.clicked.connect(self.back_clicked.emit)
+        self.back_to_import_button.clicked.connect(self.back_to_import_clicked.emit)
         self.send_button.clicked.connect(self._emit_send)
         self.select_all_button.clicked.connect(self.select_all_eligible_clicked.emit)
         self.clear_selection_button.clicked.connect(self.clear_selection_clicked.emit)
@@ -961,6 +1003,10 @@ class SendPage(QWidget):
     def clear_logs(self) -> None:
         self.logs_box.clear()
         self._hide_logs_tab()
+        self.back_to_import_button.setVisible(False)
+
+    def set_post_send_navigation_visible(self, visible: bool) -> None:
+        self.back_to_import_button.setVisible(bool(visible))
 
     def set_send_enabled(self, enabled: bool) -> None:
         self.send_button.setEnabled(enabled and not self._is_busy)
@@ -969,6 +1015,7 @@ class SendPage(QWidget):
         self._is_busy = busy
         self.send_button.setEnabled(not busy)
         self.back_button.setEnabled(not busy)
+        self.back_to_import_button.setEnabled(not busy)
         self.select_all_button.setEnabled(not busy)
         self.clear_selection_button.setEnabled(not busy)
         self.per_client_checkbox.setEnabled(not busy)
@@ -1309,6 +1356,7 @@ class MainWindow(QMainWindow):
         self.current_csv_path: str | None = None
         self.subject: str = ""
         self.body: str = ""
+        self._send_completed = False
 
         self._worker: WorkerThread | None = None
         self._send_worker: SendEmailsThread | None = None
@@ -1358,6 +1406,7 @@ class MainWindow(QMainWindow):
         self.csv_page.selection_toggled.connect(self._on_csv_selection_toggled)
 
         self.send_page.back_clicked.connect(self._back_to_csv)
+        self.send_page.back_to_import_clicked.connect(self._back_to_csv_after_send)
         self.send_page.subject_changed.connect(self._on_subject_changed)
         self.send_page.body_changed.connect(self._on_body_changed)
         self.send_page.selection_changed.connect(self._refresh_send_state)
@@ -1585,6 +1634,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Sem destinatarios", "Selecione ao menos um destinatario valido na Tela 2.")
             return
 
+        self._send_completed = False
+        self.send_page.set_post_send_navigation_visible(False)
         self.send_page.set_selected_recipients(selected_records)
         self.send_page.set_subject(self.subject)
         self.send_page.set_body(self.body)
@@ -1595,6 +1646,10 @@ class MainWindow(QMainWindow):
 
     def _back_to_csv(self) -> None:
         self.statusBar().showMessage("Retornou para Tela 2")
+        self.stack.setCurrentWidget(self.csv_page)
+
+    def _back_to_csv_after_send(self) -> None:
+        self.statusBar().showMessage("Retornou para Tela 2 apos envio", 5000)
         self.stack.setCurrentWidget(self.csv_page)
 
     def _select_all_send(self) -> None:
@@ -1629,6 +1684,8 @@ class MainWindow(QMainWindow):
 
         self.subject = subject.strip()
         self.body = body.strip()
+        self._send_completed = False
+        self.send_page.set_post_send_navigation_visible(False)
 
         if not self.subject or not self.body:
             QMessageBox.warning(self, "Mensagem incompleta", "Assunto e corpo sao obrigatorios.")
@@ -1672,6 +1729,19 @@ class MainWindow(QMainWindow):
 
         self.send_page.append_log("---")
         self.send_page.append_log(f"Resumo: OK={ok_count} | ERRO={error_count} | SKIP={skip_count}")
+
+        try:
+            audit_dir = export_send_audit(
+                summary=summary,
+                records=self.records,
+                raw_logs=self.send_page.logs_box.toPlainText(),
+            )
+            self.send_page.append_log(f"AUDITORIA | Exportada em: {audit_dir}")
+        except Exception as error:  # noqa: BLE001
+            self.send_page.append_log(f"AVISO | Falha ao exportar auditoria: {error}")
+
+        self._send_completed = True
+        self.send_page.set_post_send_navigation_visible(True)
 
         QMessageBox.information(
             self,
@@ -1718,12 +1788,25 @@ class MainWindow(QMainWindow):
             self._refresh_csv_state()
 
     def _on_send_failed(self, error_message: str) -> None:
+        self._send_completed = False
         self.send_page.append_log(f"Erro fatal no envio: {error_message}")
+
+        try:
+            audit_dir = export_send_audit(
+                summary={"ok": 0, "error": 1, "skip": 0, "results": []},
+                records=self.records,
+                raw_logs=self.send_page.logs_box.toPlainText(),
+            )
+            self.send_page.append_log(f"AUDITORIA | Exportada em: {audit_dir}")
+        except Exception as error:  # noqa: BLE001
+            self.send_page.append_log(f"AVISO | Falha ao exportar auditoria: {error}")
+
         QMessageBox.critical(self, "Erro no envio", error_message)
 
     def _on_send_finished_cleanup(self) -> None:
         self.send_page.set_busy(False)
         self._send_worker = None
+        self.send_page.set_post_send_navigation_visible(self._send_completed)
         self._refresh_send_state()
         self.statusBar().showMessage("Envio finalizado", 5000)
 

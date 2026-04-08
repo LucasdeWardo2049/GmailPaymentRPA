@@ -21,10 +21,13 @@ def _parse_iso_date(raw_value: str | None) -> date | None:
     if not candidate:
         return None
 
-    try:
-        return datetime.strptime(candidate, "%Y-%m-%d").date()
-    except ValueError:
-        return None
+    for date_format in ("%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(candidate, date_format).date()
+        except ValueError:
+            continue
+
+    return None
 
 
 def evaluate_record(record: ClientRecord, today: date | None = None, cooldown_days: int = 3) -> RuleDecision:
@@ -36,7 +39,7 @@ def evaluate_record(record: ClientRecord, today: date | None = None, cooldown_da
 
     vencimento = _parse_iso_date(record.vencimento)
     if vencimento is None:
-        return RuleDecision(False, "vencimento invalido (use YYYY-MM-DD)", 0)
+        return RuleDecision(False, "vencimento invalido (use DD-MM-YYYY ou YYYY-MM-DD)", 0)
 
     dias_atraso = (today_value - vencimento).days
     if dias_atraso < 0:
@@ -48,7 +51,7 @@ def evaluate_record(record: ClientRecord, today: date | None = None, cooldown_da
 
     ultima_cobranca = _parse_iso_date(ultima_cobranca_raw)
     if ultima_cobranca is None:
-        return RuleDecision(False, "ultima_cobranca invalida (use YYYY-MM-DD)", dias_atraso)
+        return RuleDecision(False, "ultima_cobranca invalida (use DD-MM-YYYY ou YYYY-MM-DD)", dias_atraso)
 
     dias_desde_ultima = (today_value - ultima_cobranca).days
     if dias_desde_ultima < cooldown_days:
