@@ -123,6 +123,36 @@ def test_load_client_records_fails_when_required_columns_missing(tmp_path: Path)
     assert "ultima_cobranca" in str(error.value)
 
 
+def test_load_client_records_sets_aberto_when_status_column_is_missing(tmp_path: Path) -> None:
+    csv_path = _write_csv(
+        tmp_path,
+        "id,cliente_nome,email,valor,vencimento,ultima_cobranca\n"
+        "1,Joao,joao@example.com,199.90,2026-02-01,\n",
+    )
+
+    records, rejected_rows = load_client_records(csv_path)
+
+    assert len(records) == 1
+    assert rejected_rows == []
+    assert records[0].status == "ABERTO"
+    assert records[0].is_valid is True
+
+
+def test_load_client_records_sets_aberto_when_status_is_blank(tmp_path: Path) -> None:
+    csv_path = _write_csv(
+        tmp_path,
+        "id,cliente_nome,email,status,valor,vencimento,ultima_cobranca\n"
+        "1,Joao,joao@example.com,,199.90,2026-02-01,\n",
+    )
+
+    records, rejected_rows = load_client_records(csv_path)
+
+    assert len(records) == 1
+    assert rejected_rows == []
+    assert records[0].status == "ABERTO"
+    assert records[0].is_valid is True
+
+
 def test_load_client_records_from_xlsx_normalizes_excel_types(tmp_path: Path) -> None:
     xlsx_path = _write_xlsx(
         tmp_path,
@@ -152,6 +182,20 @@ def test_load_client_records_from_xlsx_requires_expected_columns(tmp_path: Path)
         load_client_records_from_xlsx(xlsx_path)
 
     assert "ultima_cobranca" in str(error.value)
+
+
+def test_load_client_records_from_xlsx_sets_aberto_when_status_column_is_missing(tmp_path: Path) -> None:
+    xlsx_path = _write_xlsx(
+        tmp_path,
+        ["id", "cliente_nome", "email", "valor", "vencimento", "ultima_cobranca"],
+        [["1", "Ana", "ana@example.com", 100.0, date(2026, 4, 10), None]],
+    )
+
+    records, rejected_rows = load_client_records_from_xlsx(xlsx_path)
+
+    assert len(records) == 1
+    assert rejected_rows == []
+    assert records[0].status == "ABERTO"
 
 
 def test_load_client_records_from_file_dispatches_csv_and_xlsx(tmp_path: Path) -> None:
