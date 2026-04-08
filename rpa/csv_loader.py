@@ -129,6 +129,7 @@ def load_client_records(csv_path: str) -> tuple[list[ClientRecord], list[str]]:
 
             reasons: list[str] = []
             if row_id is None:
+                reasons.append("id invalido")
                 row_id = f"linha-{line_number}"
 
             reasons.extend(validate_record_fields(email, status, valor))
