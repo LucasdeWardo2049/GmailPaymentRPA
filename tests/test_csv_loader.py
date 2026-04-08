@@ -91,7 +91,23 @@ def test_load_client_records_rejects_invalid_email(tmp_path: Path) -> None:
     assert len(records) == 1
     assert len(rejected_rows) == 1
     assert "email invalido" in rejected_rows[0]
+    assert rejected_rows[0].startswith("Linha 1:")
     assert records[0].is_valid is False
+
+
+def test_load_client_records_reports_data_row_number_not_header_line(tmp_path: Path) -> None:
+    csv_path = _write_csv(
+        tmp_path,
+        "id,cliente_nome,email,status,valor,vencimento,ultima_cobranca\n"
+        "1,Cliente Um,2022006229@ifam.edu.br,ABERTO,120.50,2026-04-01,\n"
+        "2,Cliente Dois,2026500481@ifam.edu.br,ABERTO,120.50,2026-04-06,\n"
+        ",Cliente Sem ID,semid@example.com,ABERTO,60.00,08-04-2026,\n"
+        "9002,Cliente Email Invalido,email-invalido,ABERTO,95.00,08-04-2026,\n",
+    )
+
+    _, rejected_rows = load_client_records(csv_path)
+
+    assert rejected_rows == ["Linha 4: email invalido"]
 
 
 def test_load_client_records_fails_when_required_columns_missing(tmp_path: Path) -> None:

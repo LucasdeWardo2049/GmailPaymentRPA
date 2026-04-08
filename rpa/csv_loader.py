@@ -222,7 +222,7 @@ def load_client_records(csv_path: str) -> tuple[list[ClientRecord], list[str]]:
 
         rows = (
             (line_number, row)
-            for line_number, row in enumerate(reader, start=2)
+            for line_number, row in enumerate(reader, start=1)
         )
 
         return _load_records_from_rows(rows)
@@ -259,7 +259,7 @@ def load_client_records_from_xlsx(
         _validate_required_columns(fieldnames, source_label="XLSX")
 
         def iter_rows() -> Iterable[tuple[int, dict[str, object | None]]]:
-            for line_number, row_cells in enumerate(rows_iter, start=2):
+            for line_number, row_cells in enumerate(rows_iter, start=1):
                 row_data: dict[str, object | None] = {}
                 for index, field_name in enumerate(fieldnames):
                     if not field_name:
