@@ -68,32 +68,64 @@ EDITABLE_COLUMNS = {COL_CLIENTE, COL_EMAIL, COL_STATUS, COL_VALOR}
 
 APP_STYLESHEET = """
 QWidget {
+    font-family: 'Segoe UI', system-ui, sans-serif;
     font-size: 13px;
+    background-color: #1e1e24; /* Fundo principal escuro */
+    color: #e2e8f0; /* Texto claro */
 }
 
+/* Campos de texto e tabelas */
 QLineEdit, QPlainTextEdit, QTableWidget {
-    border: 1px solid #a8a8a8;
-    border-radius: 4px;
-    padding: 4px;
-    background-color: #ffffff;
+    background-color: #2b2b36; /* Fundo levemente mais claro que o principal */
+    border: 1px solid #3f3f4e;
+    border-radius: 6px; /* Bordas mais modernas */
+    padding: 6px;
+    color: #e2e8f0;
 }
 
+/* Estilizacao especifica da Tabela */
+QTableWidget {
+    gridline-color: #3f3f4e; /* Linhas de grade suaves */
+    alternate-background-color: #23232c;
+    selection-background-color: #3b82f6; /* Azul moderno para selecao */
+    selection-color: #ffffff;
+}
+
+QTableWidget::item:selected {
+    background-color: #3b82f6;
+    color: #ffffff;
+}
+
+/* Botoes */
 QPushButton {
-    min-height: 30px;
-    padding: 4px 10px;
+    background-color: #3b82f6; /* Azul primario */
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    min-height: 32px;
+    padding: 6px 16px;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background-color: #60a5fa; /* Azul mais claro no hover */
 }
 
 QPushButton:disabled {
-    color: #666666;
+    background-color: #3f3f4e;
+    color: #94a3b8;
 }
 
-QLineEdit:focus, QPlainTextEdit:focus, QTableWidget:focus, QPushButton:focus, QCheckBox:focus {
-    border: 2px solid #0a6ed1;
+/* Foco nos inputs */
+QLineEdit:focus, QPlainTextEdit:focus, QTableWidget:focus {
+    border: 2px solid #3b82f6;
     outline: none;
 }
 
+/* Labels */
 QLabel#statusLabel {
     font-weight: 600;
+    color: #60a5fa;
 }
 """
 
@@ -342,11 +374,19 @@ class CsvPage(QWidget):
         self.table = QTableWidget(0, len(CSV_HEADERS))
         self.table.setHorizontalHeaderLabels(CSV_HEADERS)
         header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(60)
         header.setSectionResizeMode(COL_SELECT, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(COL_ID, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(COL_STATUS, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(COL_VALOR, QHeaderView.ResizeToContents)
-        header.setStretchLastSection(True)
+        header.setSectionResizeMode(COL_VENCIMENTO, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(COL_ULTIMA, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(COL_CLIENTE, QHeaderView.Interactive)
+        header.setSectionResizeMode(COL_EMAIL, QHeaderView.Stretch)
+        header.setSectionResizeMode(COL_OBS, QHeaderView.Interactive)
+        self.table.setColumnWidth(COL_CLIENTE, 180)
+        self.table.setColumnWidth(COL_OBS, 220)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setAlternatingRowColors(True)
@@ -380,7 +420,6 @@ class CsvPage(QWidget):
         layout.addWidget(self.selected_file_label)
         layout.addWidget(self.count_label)
         layout.addWidget(self.table)
-        layout.addWidget(QLabel("Legenda: vermelho = invalido | laranja = ABERTO | cinza = PAGO/CANCELADO"))
         layout.addWidget(QLabel("Linhas invalidas"))
         layout.addWidget(self.rejected_box)
 
@@ -402,7 +441,7 @@ class CsvPage(QWidget):
 
     def set_rejections(self, rejected_rows: list[str]) -> None:
         if not rejected_rows:
-            self.rejected_box.setPlainText("Sem rejeicoes.")
+            self.rejected_box.setPlainText("Sem Rejeicoes")
             return
         self.rejected_box.setPlainText("\n".join(rejected_rows))
 
@@ -572,11 +611,19 @@ class SendPage(QWidget):
         self.table = QTableWidget(0, len(self.SEND_HEADERS))
         self.table.setHorizontalHeaderLabels(self.SEND_HEADERS)
         header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(60)
         header.setSectionResizeMode(self.SEND_COL_SELECT, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.SEND_COL_ID, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.SEND_COL_STATUS, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.SEND_COL_VALOR, QHeaderView.ResizeToContents)
-        header.setStretchLastSection(True)
+        header.setSectionResizeMode(self.SEND_COL_VENCIMENTO, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.SEND_COL_ULTIMA, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.SEND_COL_CLIENTE, QHeaderView.Interactive)
+        header.setSectionResizeMode(self.SEND_COL_EMAIL, QHeaderView.Stretch)
+        header.setSectionResizeMode(self.SEND_COL_MOTIVO, QHeaderView.Interactive)
+        self.table.setColumnWidth(self.SEND_COL_CLIENTE, 180)
+        self.table.setColumnWidth(self.SEND_COL_MOTIVO, 240)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
@@ -792,12 +839,25 @@ class SendPage(QWidget):
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self.table.setItem(row_index, column_index, item)
 
-        if not eligible:
+        if eligible:
+            self._apply_eligible_style(row_index)
+        else:
             self._apply_skip_style(row_index)
 
+    def _apply_eligible_style(self, row_index: int) -> None:
+        background = QColor("#f2f4f7")
+        foreground = QColor("#1f1f1f")
+
+        for column_index in range(self.table.columnCount()):
+            item = self.table.item(row_index, column_index)
+            if item is None:
+                continue
+            item.setBackground(background)
+            item.setForeground(foreground)
+
     def _apply_skip_style(self, row_index: int) -> None:
-        background = QColor("#d8d8d8")
-        foreground = QColor("#5f5f5f")
+        background = QColor("#d9dde3")
+        foreground = QColor("#454b54")
 
         for column_index in range(self.table.columnCount()):
             item = self.table.item(row_index, column_index)
