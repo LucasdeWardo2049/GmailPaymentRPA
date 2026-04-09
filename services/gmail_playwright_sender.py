@@ -88,6 +88,15 @@ class GmailPlaywrightSender:
     def validate_session(self, timeout_ms: int = 15000) -> bool:
         return self._open_and_check_session(timeout_ms=timeout_ms)
 
+    def logout_session(self) -> bool:
+        with sync_playwright() as playwright:
+            context = self._launch_context(playwright)
+            try:
+                context.clear_cookies()
+                return True
+            finally:
+                context.close()
+
     def send_batch(
         self,
         recipients: Sequence[ClientRecord],

@@ -29,10 +29,10 @@ Observacao: no import, a coluna `status` pode estar ausente ou vazia. Nesses cas
 automaticamente como `ABERTO` (mantendo o campo editavel na Tela 2).
 
 ## Fluxo
-1. Na Tela 1, clique em "Abrir Gmail e fazer login" (opcionalmente, abra "Configurar diretorio de perfil" para ajustar o Playwright).
+1. Na Tela 1 (layout centralizado em card), use o icone de configuracoes (topo direito) para ajustar perfil Playwright, tema (Dark/Light), modo Headless e logout Gmail.
 2. Finalize login/2FA manualmente na janela do browser aberta pelo Playwright.
 3. Clique em "Validar sessao" e depois em "Avancar".
-4. Na Tela 2, carregue o arquivo CSV ou XLSX, ajuste email/status/valor quando necessario e selecione os destinatarios.
+4. Na Tela 2, carregue o arquivo CSV ou XLSX, crie/edite/delete linhas quando necessario e selecione os destinatarios.
 5. Opcional: clique em "Salvar CSV editado" para exportar os ajustes e status de envio.
 6. Na Tela 3, escolha envio normal ou "Personalizar por cliente (placeholders)", preencha Assunto/Corpo e clique em "Enviar".
 7. Ao finalizar, use "Voltar para Importacao" para retornar direto a Tela 2.
@@ -44,8 +44,12 @@ automaticamente como `ABERTO` (mantendo o campo editavel na Tela 2).
 - Linhas invalidas ficam na tabela com destaque em vermelho e checkbox desabilitado.
 - Linhas ABERTO validas ficam marcadas por padrao.
 - Linhas PAGO/CANCELADO ficam desmarcadas por padrao.
-- Campos editaveis: cliente_nome, email, status, valor.
-- Campos read-only: id, vencimento, ultima_cobranca, observacao.
+- Acoes de CRUD na tela:
+	- Criar linha: botao `Adicionar linha`.
+	- Editar linha: duplo clique em `cliente_nome`, `email`, `status`, `valor` ou `vencimento`.
+	- Deletar linha: selecione a linha e use `Deletar linha` (com confirmacao).
+- Campos editaveis: cliente_nome, email, status, valor, vencimento.
+- Campos read-only: id, ultima_cobranca, observacao.
 - Validacao na edicao:
 	- email valido (regex simples)
 	- status em ABERTO/PAGO/CANCELADO
@@ -69,6 +73,7 @@ O resumo contem totais de OK/ERRO/SKIP e o detalhado lista os registros processa
 ## Tela 3 - SKIP, Modos e Placeholders
 - A tabela da Tela 3 possui coluna `motivo` para exibir motivo de SKIP.
 - Registros inelegiveis ficam cinza, com checkbox desabilitado, e nao entram no envio.
+- O campo de email pode ser ajustado por cliente diretamente na tabela da Tela 3 (duplo clique na coluna email), independentemente do preset/template selecionado.
 - A tela foi reorganizada em duas metades:
 	- Metade superior: tabela de destinatarios + botoes principais de acao.
 	- Metade inferior: abas para editar mensagem, visualizar preview e acompanhar logs.
@@ -109,6 +114,12 @@ Body:
 - Ola {cliente_nome},\n\nIdentificamos pendencia no valor de R$ {valor}.\nVencimento: {vencimento}.\nDias em atraso: {dias_atraso}.\n\nFavor regularizar.
 
 ## Observacoes
-- O login e persistido no `userDataDir` configurado na opcao avancada da Tela 1.
+- O login e persistido no `userDataDir` configurado em Configuracoes.
+- O modal de Configuracoes permite:
+	- Alterar diretorio de perfil Playwright.
+	- Alternar Dark Mode / Light Mode.
+	- Ativar/desativar modo Headless (uso recomendado apenas para testes).
+	- Executar logout Gmail (limpa cookies do perfil atual).
+- Tema, diretorio de perfil e modo Headless ficam persistidos entre execucoes.
 - O envio e sequencial (um destinatario por vez).
 - Falhas de envio sao logadas e o processo continua com o proximo cliente.
