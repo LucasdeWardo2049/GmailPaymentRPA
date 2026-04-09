@@ -144,9 +144,9 @@ QLabel#statusLabel {
 
 # Semantic colors for Screen 2 row states.
 CSV_ROW_COLORS = {
-    "invalid": (QColor("#b33535"), QColor("#ffffff")),
-    "open": (QColor("#5a4316"), QColor("#f8e8c2")),
-    "closed": (QColor("#334155"), QColor("#e2e8f0")),
+    "invalid": (QColor("#6a2f3b"), QColor("#ffe9ef")),
+    "open": (QColor("#274060"), QColor("#e8f1ff")),
+    "closed": (QColor("#1f4f45"), QColor("#dcfce7")),
     "default": (QColor("#2b2f38"), QColor("#e2e8f0")),
 }
 
