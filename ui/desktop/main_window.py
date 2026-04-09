@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QThread, Qt, Signal
-from PySide6.QtGui import QColor, QKeySequence, QShortcut
+from PySide6.QtCore import QSettings, QSize, QThread, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QFormLayout,
     QHeaderView,
     QHBoxLayout,
@@ -22,10 +24,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
+    QStyle,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -36,6 +41,7 @@ from rpa.csv_loader import (
     format_valor,
     is_valid_email,
     load_client_records_from_file,
+    normalize_date_input,
     normalize_status,
     normalize_text,
     parse_valor,
@@ -50,6 +56,11 @@ from services.message_composer import (
     validate_templates,
 )
 from services.message_rules import evaluate_record
+
+try:
+    import qtawesome as qta
+except Exception:  # pragma: no cover - fallback for environments without qtawesome
+    qta = None
 
 CSV_HEADERS = [
     "Selecionar",
@@ -73,30 +84,36 @@ COL_VENCIMENTO = 6
 COL_ULTIMA = 7
 COL_OBS = 8
 
-EDITABLE_COLUMNS = {COL_CLIENTE, COL_EMAIL, COL_STATUS, COL_VALOR}
+EDITABLE_COLUMNS = {COL_CLIENTE, COL_EMAIL, COL_STATUS, COL_VALOR, COL_VENCIMENTO}
 
-APP_STYLESHEET = """
+THEME_DARK = "dark"
+THEME_LIGHT = "light"
+
+SETTINGS_KEY_THEME = "ui/theme"
+SETTINGS_KEY_PROFILE_DIR = "login/profile_dir"
+SETTINGS_KEY_HEADLESS = "login/headless"
+
+THEME_STYLESHEETS = {
+    THEME_DARK: """
 QWidget {
     font-family: 'Segoe UI', system-ui, sans-serif;
     font-size: 13px;
-    background-color: #1e1e24; /* Fundo principal escuro */
-    color: #e2e8f0; /* Texto claro */
+    background-color: #1e1e24;
+    color: #e2e8f0;
 }
 
-/* Campos de texto e tabelas */
 QLineEdit, QPlainTextEdit, QTableWidget {
-    background-color: #2b2b36; /* Fundo levemente mais claro que o principal */
+    background-color: #2b2b36;
     border: 1px solid #3f3f4e;
-    border-radius: 6px; /* Bordas mais modernas */
+    border-radius: 6px;
     padding: 6px;
     color: #e2e8f0;
 }
 
-/* Estilizacao especifica da Tabela */
 QTableWidget {
-    gridline-color: #3f3f4e; /* Linhas de grade suaves */
+    gridline-color: #3f3f4e;
     alternate-background-color: #23232c;
-    selection-background-color: #3b82f6; /* Azul moderno para selecao */
+    selection-background-color: #3b82f6;
     selection-color: #ffffff;
 }
 
@@ -109,9 +126,8 @@ QTableWidget::item:selected {
     color: #ffffff;
 }
 
-/* Botoes */
 QPushButton {
-    background-color: #3b82f6; /* Azul primario */
+    background-color: #3b82f6;
     color: #ffffff;
     border: none;
     border-radius: 6px;
@@ -121,7 +137,7 @@ QPushButton {
 }
 
 QPushButton:hover {
-    background-color: #60a5fa; /* Azul mais claro no hover */
+    background-color: #60a5fa;
 }
 
 QPushButton:disabled {
@@ -129,26 +145,198 @@ QPushButton:disabled {
     color: #94a3b8;
 }
 
-/* Foco nos inputs */
 QLineEdit:focus, QPlainTextEdit:focus, QTableWidget:focus {
     border: 2px solid #3b82f6;
     outline: none;
 }
 
-/* Labels */
 QLabel#statusLabel {
     font-weight: 600;
     color: #60a5fa;
 }
-"""
-
-# Semantic colors for Screen 2 row states.
-CSV_ROW_COLORS = {
-    "invalid": (QColor("#6a2f3b"), QColor("#ffe9ef")),
-    "open": (QColor("#274060"), QColor("#e8f1ff")),
-    "closed": (QColor("#1f4f45"), QColor("#dcfce7")),
-    "default": (QColor("#2b2f38"), QColor("#e2e8f0")),
+QToolBar {
+    border: none;
+    spacing: 4px;
+    padding: 20px 20px 0px 0px;
+    background: transparent;
 }
+
+QToolButton#settingsButton {
+    border: 1px solid #3f3f4e;
+    border-radius: 18px;
+    background-color: #2b2b36;
+    min-height: 36px;
+    min-width: 36px;
+}
+
+QToolButton#settingsButton:hover {
+    background-color: #3b82f6;
+}
+
+QFrame#loginCard {
+    background-color: #242432;
+    border: 1px solid #3f3f4e;
+    border-radius: 12px;
+    padding: 18px;
+}
+
+QLabel#loginTitle {
+    font-size: 20px;
+    font-weight: 700;
+    background: transparent;
+}
+
+QLabel#loginSubtitle {
+    color: #94a3b8;
+    background: transparent;
+}
+""",
+    THEME_LIGHT: """
+QWidget {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 13px;
+    background-color: #f4f6fb;
+    color: #1f2937;
+}
+
+QLineEdit, QPlainTextEdit, QTableWidget {
+    background-color: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 6px;
+    color: #1f2937;
+}
+
+QTableWidget {
+    gridline-color: #dbe3ef;
+    alternate-background-color: #f8fafc;
+    selection-background-color: #2563eb;
+    selection-color: #ffffff;
+}
+
+QTableWidget::item {
+    color: #1f2937;
+}
+
+QTableWidget::item:selected {
+    background-color: #2563eb;
+    color: #ffffff;
+}
+
+QPushButton {
+    background-color: #2563eb;
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    min-height: 32px;
+    padding: 6px 16px;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background-color: #1d4ed8;
+}
+
+QPushButton:disabled {
+    background-color: #cbd5e1;
+    color: #64748b;
+}
+
+QLineEdit:focus, QPlainTextEdit:focus, QTableWidget:focus {
+    border: 2px solid #2563eb;
+    outline: none;
+}
+
+QLabel#statusLabel {
+    font-weight: 600;
+    color: #1d4ed8;
+}
+
+QToolBar {
+    border: none;
+    spacing: 4px;
+    padding: 20px 20px 0px 0px;
+    background: transparent;
+}
+
+QToolButton#settingsButton {
+    border: 1px solid #cbd5e1;
+    border-radius: 18px;
+    background-color: #ffffff;
+    min-height: 36px;
+    min-width: 36px;
+}
+
+QToolButton#settingsButton:hover {
+    background-color: #e2e8f0;
+}
+
+QFrame#loginCard {
+    background-color: #ffffff;
+    border: 1px solid #dbe3ef;
+    border-radius: 12px;
+    padding: 18px;
+}
+
+QLabel#loginTitle {
+    font-size: 20px;
+    font-weight: 700;
+    background: transparent;
+}
+
+QLabel#loginSubtitle {
+    color: #64748b;
+    background: transparent;
+}
+""",
+}
+
+
+THEME_CSV_ROW_COLORS = {
+    THEME_DARK: {
+        "invalid": (QColor("#6a2f3b"), QColor("#ffe9ef")),
+        "open": (QColor("#274060"), QColor("#e8f1ff")),
+        "closed": (QColor("#1f4f45"), QColor("#dcfce7")),
+        "default": (QColor("#2b2f38"), QColor("#e2e8f0")),
+    },
+    THEME_LIGHT: {
+        "invalid": (QColor("#f8d7da"), QColor("#7f1d1d")),
+        "open": (QColor("#dbeafe"), QColor("#1e3a8a")),
+        "closed": (QColor("#dcfce7"), QColor("#14532d")),
+        "default": (QColor("#f1f5f9"), QColor("#1f2937")),
+    },
+}
+
+THEME_SEND_ROW_COLORS = {
+    THEME_DARK: {
+        "eligible": (QColor("#2b2f38"), QColor("#e2e8f0")),
+        "skip": (QColor("#3a3f4a"), QColor("#cbd5e1")),
+    },
+    THEME_LIGHT: {
+        "eligible": (QColor("#eef2ff"), QColor("#1e293b")),
+        "skip": (QColor("#e2e8f0"), QColor("#334155")),
+    },
+}
+
+
+def normalize_theme(theme_name: str | None) -> str:
+    candidate = (theme_name or THEME_DARK).strip().lower()
+    if candidate not in THEME_STYLESHEETS:
+        return THEME_DARK
+    return candidate
+
+
+def normalize_due_date_for_edit(value: str) -> tuple[str | None, str | None]:
+    normalized = normalize_date_input(value)
+    if normalized is None:
+        return None, None
+
+    try:
+        datetime.strptime(normalized, "%Y-%m-%d")
+    except ValueError:
+        return None, "Data invalida. Use DD-MM-YYYY ou YYYY-MM-DD."
+
+    return normalized, None
 
 
 class WorkerThread(QThread):
@@ -268,17 +456,16 @@ class LoginPage(QWidget):
         super().__init__()
         self._session_valid = False
         self._profile_dir = str(Path("playwright-profile").resolve())
+        self._headless_mode = False
 
-        title = QLabel("Tela 1/3 - Login Gmail")
-        title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        self.title_label = QLabel("Tela 1/3 - Login Gmail")
+        self.title_label.setObjectName("loginTitle")
+        self.title_label.setAlignment(Qt.AlignCenter)
 
-        self.profile_settings_button = QPushButton("Configurar diretorio de perfil (opcional)")
-        self.profile_settings_button.setToolTip(
-            "Abre um modal para configurar a pasta de perfil usada para manter login no Gmail"
-        )
-        self.headless_checkbox = QCheckBox("Headless")
-        self.headless_checkbox.setChecked(False)
-        self.headless_checkbox.setToolTip("Use apenas para testes. No modo visivel o login manual e mais confiavel")
+        self.profile_summary_label = QLabel("")
+        self.profile_summary_label.setObjectName("loginSubtitle")
+        self.profile_summary_label.setWordWrap(True)
+        self.profile_summary_label.setAlignment(Qt.AlignCenter)
 
         self.open_login_button = QPushButton("Abrir Gmail e fazer login")
         self.validate_button = QPushButton("Validar sessao")
@@ -291,32 +478,39 @@ class LoginPage(QWidget):
         self.status_label = QLabel("Status: sessao nao validada.")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setWordWrap(True)
+        self.status_label.setAlignment(Qt.AlignCenter)
 
-        form = QFormLayout()
-        form.addRow("Playwright (avancado)", self.profile_settings_button)
-        form.addRow("", self.headless_checkbox)
+        for button in (self.open_login_button, self.validate_button, self.next_button):
+            button.setMinimumHeight(38)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        buttons = QHBoxLayout()
-        buttons.addWidget(self.open_login_button)
-        buttons.addWidget(self.validate_button)
-        buttons.addStretch()
-        buttons.addWidget(self.next_button)
+        self.login_card = QFrame()
+        self.login_card.setObjectName("loginCard")
+        self.login_card.setMaximumWidth(420)
+        self.login_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
+        card_layout = QVBoxLayout(self.login_card)
+        card_layout.setContentsMargins(20, 20, 20, 20)
+        card_layout.setSpacing(12)
+        card_layout.addWidget(self.title_label)
+        card_layout.addWidget(self.profile_summary_label)
+        card_layout.addWidget(self.open_login_button)
+        card_layout.addWidget(self.validate_button)
+        card_layout.addWidget(self.status_label)
+        card_layout.addWidget(self.next_button)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(title)
-        layout.addLayout(form)
-        layout.addLayout(buttons)
-        layout.addWidget(self.status_label)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.addStretch()
+        layout.addWidget(self.login_card, 0, Qt.AlignHCenter)
         layout.addStretch()
 
         self.open_login_button.clicked.connect(self._emit_open_login)
         self.validate_button.clicked.connect(self._emit_validate)
-        self.profile_settings_button.clicked.connect(self._open_profile_dir_modal)
         self.next_button.clicked.connect(self.next_clicked.emit)
+        self._refresh_profile_summary()
 
     def set_busy(self, busy: bool) -> None:
-        self.profile_settings_button.setEnabled(not busy)
-        self.headless_checkbox.setEnabled(not busy)
         self.open_login_button.setEnabled(not busy)
         self.validate_button.setEnabled(not busy)
         self.next_button.setEnabled((not busy) and self._session_valid)
@@ -338,59 +532,126 @@ class LoginPage(QWidget):
             return profile_dir
         return str(Path("playwright-profile").resolve())
 
+    def set_profile_dir(self, profile_dir: str) -> None:
+        candidate = profile_dir.strip()
+        self._profile_dir = candidate or str(Path("playwright-profile").resolve())
+        self._refresh_profile_summary()
+
+    def get_headless_mode(self) -> bool:
+        return self._headless_mode
+
+    def set_headless_mode(self, enabled: bool) -> None:
+        self._headless_mode = bool(enabled)
+
     def _emit_open_login(self) -> None:
-        self.open_login_clicked.emit(self.get_profile_dir(), self.headless_checkbox.isChecked())
+        self.open_login_clicked.emit(self.get_profile_dir(), self.get_headless_mode())
 
     def _emit_validate(self) -> None:
-        self.validate_clicked.emit(self.get_profile_dir(), self.headless_checkbox.isChecked())
+        self.validate_clicked.emit(self.get_profile_dir(), self.get_headless_mode())
 
-    def _open_profile_dir_modal(self) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Diretorio do perfil Playwright")
-        dialog.setModal(True)
+    def _refresh_profile_summary(self) -> None:
+        default_profile = str(Path("playwright-profile").resolve())
+        if self.get_profile_dir() == default_profile:
+            self.profile_summary_label.setText("Perfil padrao ativo. Ajuste em Configuracoes.")
+            return
+        self.profile_summary_label.setText("Perfil personalizado ativo. Ajuste em Configuracoes.")
 
-        layout = QVBoxLayout(dialog)
+
+class SettingsDialog(QDialog):
+    def __init__(
+        self,
+        current_profile_dir: str,
+        current_theme: str,
+        current_headless: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._logout_requested = False
+
+        self.setWindowTitle("Configuracoes")
+        self.setModal(True)
+        self.resize(620, 280)
+
         description = QLabel(
-            "Defina a pasta usada para armazenar sessao, cookies e dados do navegador entre execucoes."
+            "Ajuste o diretorio de perfil Playwright, tema da interface e acao de logout do Gmail."
         )
         description.setWordWrap(True)
 
-        profile_dir_edit = QLineEdit(self.get_profile_dir())
-        profile_dir_edit.setClearButtonEnabled(True)
-        profile_dir_edit.setPlaceholderText("Informe ou selecione a pasta de perfil do navegador")
+        self.profile_dir_edit = QLineEdit(current_profile_dir.strip() or str(Path("playwright-profile").resolve()))
+        self.profile_dir_edit.setClearButtonEnabled(True)
+        self.profile_dir_edit.setPlaceholderText("Informe ou selecione a pasta de perfil do navegador")
 
         browse_button = QPushButton("Escolher pasta")
-        browse_button.setToolTip("Selecionar pasta de perfil")
+        browse_button.setToolTip("Selecionar pasta de perfil Playwright")
 
         profile_row = QHBoxLayout()
         profile_row.setContentsMargins(0, 0, 0, 0)
-        profile_row.addWidget(profile_dir_edit)
+        profile_row.addWidget(self.profile_dir_edit)
         profile_row.addWidget(browse_button)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        profile_row_widget = QWidget()
+        profile_row_widget.setLayout(profile_row)
 
+        self.dark_mode_checkbox = QCheckBox("Ativar Dark Mode")
+        self.dark_mode_checkbox.setChecked(normalize_theme(current_theme) == THEME_DARK)
+        self.dark_mode_checkbox.setToolTip("Desmarque para usar tema claro")
+
+        self.headless_checkbox = QCheckBox("Ativar modo Headless")
+        self.headless_checkbox.setChecked(bool(current_headless))
+        self.headless_checkbox.setToolTip("Use apenas para testes; login manual funciona melhor no modo visivel")
+
+        self.logout_button = QPushButton("Logout Gmail")
+        self.logout_button.setToolTip("Limpa cookies do perfil atual e invalida a sessao")
+
+        logout_hint = QLabel("Logout remove cookies da sessao atual e exige novo login na Tela 1.")
+        logout_hint.setWordWrap(True)
+
+        form = QFormLayout()
+        form.addRow("Perfil Playwright", profile_row_widget)
+        form.addRow("Tema", self.dark_mode_checkbox)
+        form.addRow("Execucao", self.headless_checkbox)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+
+        layout = QVBoxLayout(self)
         layout.addWidget(description)
-        layout.addLayout(profile_row)
+        layout.addLayout(form)
+        layout.addWidget(self.logout_button)
+        layout.addWidget(logout_hint)
         layout.addWidget(buttons)
 
         def choose_profile_dir() -> None:
             selected = QFileDialog.getExistingDirectory(
-                dialog,
+                self,
                 "Selecionar diretorio de perfil",
-                profile_dir_edit.text().strip() or self.get_profile_dir(),
+                self.profile_dir_edit.text().strip() or str(Path("playwright-profile").resolve()),
             )
             if selected:
-                profile_dir_edit.setText(selected)
+                self.profile_dir_edit.setText(selected)
 
         browse_button.clicked.connect(choose_profile_dir)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.logout_button.clicked.connect(self._request_logout)
 
-        if dialog.exec() != QDialog.Accepted:
-            return
+    def selected_profile_dir(self) -> str:
+        profile_dir = self.profile_dir_edit.text().strip()
+        return profile_dir or str(Path("playwright-profile").resolve())
 
-        selected_profile = profile_dir_edit.text().strip()
-        self._profile_dir = selected_profile or str(Path("playwright-profile").resolve())
+    def selected_theme(self) -> str:
+        if self.dark_mode_checkbox.isChecked():
+            return THEME_DARK
+        return THEME_LIGHT
+
+    def selected_headless_mode(self) -> bool:
+        return self.headless_checkbox.isChecked()
+
+    def logout_requested(self) -> bool:
+        return self._logout_requested
+
+    def _request_logout(self) -> None:
+        self._logout_requested = True
+        self.accept()
 
 
 class CsvPage(QWidget):
@@ -399,6 +660,8 @@ class CsvPage(QWidget):
     save_csv_clicked = Signal()
     select_all_valid_clicked = Signal()
     clear_selection_clicked = Signal()
+    add_row_clicked = Signal()
+    delete_row_clicked = Signal(int)
     next_clicked = Signal()
     cell_edited = Signal(int, int, str, str)
     selection_toggled = Signal(int, bool)
@@ -406,6 +669,7 @@ class CsvPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._updating_table = False
+        self._row_colors = THEME_CSV_ROW_COLORS[THEME_DARK]
 
         title = QLabel("Tela 2/3 - Importacao e Revisao")
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
@@ -415,6 +679,9 @@ class CsvPage(QWidget):
         self.save_csv_button = QPushButton("Salvar CSV editado")
         self.select_all_valid_button = QPushButton("Selecionar validos")
         self.clear_selection_button = QPushButton("Limpar selecao")
+        self.add_row_button = QPushButton("Adicionar linha")
+        self.delete_row_button = QPushButton("Deletar linha")
+        self.delete_row_button.setEnabled(False)
         self.next_button = QPushButton("Proximo")
         self.next_button.setEnabled(False)
         self.select_csv_button.setToolTip("Importar arquivo CSV ou XLSX")
@@ -422,6 +689,8 @@ class CsvPage(QWidget):
         self.save_csv_button.setToolTip("Salvar as alteracoes em um novo CSV")
         self.select_all_valid_button.setToolTip("Marcar todos os registros validos")
         self.clear_selection_button.setToolTip("Desmarcar todos os registros")
+        self.add_row_button.setToolTip("Adicionar novo registro para preenchimento manual")
+        self.delete_row_button.setToolTip("Deletar linha selecionada")
         self.next_button.setToolTip("Ir para a tela de envio")
 
         self.selected_file_label = QLabel("Arquivo: nenhum")
@@ -453,7 +722,7 @@ class CsvPage(QWidget):
             | QAbstractItemView.SelectedClicked
             | QAbstractItemView.EditKeyPressed
         )
-        self.table.setToolTip("Duplo clique em cliente_nome, email, status ou valor para editar")
+        self.table.setToolTip("Duplo clique em cliente_nome, email, status, valor ou vencimento para editar")
         self.table.setAccessibleName("Tabela de registros importados")
 
         self.rejected_box = QPlainTextEdit()
@@ -469,6 +738,8 @@ class CsvPage(QWidget):
         top_buttons.addWidget(self.save_csv_button)
         top_buttons.addWidget(self.select_all_valid_button)
         top_buttons.addWidget(self.clear_selection_button)
+        top_buttons.addWidget(self.add_row_button)
+        top_buttons.addWidget(self.delete_row_button)
         top_buttons.addStretch()
         top_buttons.addWidget(self.next_button)
 
@@ -486,8 +757,11 @@ class CsvPage(QWidget):
         self.save_csv_button.clicked.connect(self.save_csv_clicked.emit)
         self.select_all_valid_button.clicked.connect(self.select_all_valid_clicked.emit)
         self.clear_selection_button.clicked.connect(self.clear_selection_clicked.emit)
+        self.add_row_button.clicked.connect(self.add_row_clicked.emit)
+        self.delete_row_button.clicked.connect(self._emit_delete_row)
         self.next_button.clicked.connect(self.next_clicked.emit)
         self.table.itemChanged.connect(self._on_item_changed)
+        self.table.itemSelectionChanged.connect(self._update_delete_button_state)
 
     def set_selected_file(self, path: str) -> None:
         self.selected_file_label.setText(f"Arquivo: {path}")
@@ -504,6 +778,9 @@ class CsvPage(QWidget):
             return
         self.rejected_box.setPlainText("\n".join(rejected_rows))
 
+    def set_row_colors(self, row_colors: dict[str, tuple[QColor, QColor]]) -> None:
+        self._row_colors = row_colors
+
     def populate_records(self, records: list[ClientRecord]) -> None:
         self._updating_table = True
         try:
@@ -512,6 +789,7 @@ class CsvPage(QWidget):
                 self._render_row(row_index, record)
         finally:
             self._updating_table = False
+        self._update_delete_button_state()
 
     def refresh_row(self, row_index: int, record: ClientRecord) -> None:
         self._updating_table = True
@@ -578,13 +856,13 @@ class CsvPage(QWidget):
 
     def _apply_row_colors(self, row_index: int, record: ClientRecord) -> None:
         if not record.is_valid:
-            background, foreground = CSV_ROW_COLORS["invalid"]
+            background, foreground = self._row_colors["invalid"]
         elif record.status == "ABERTO":
-            background, foreground = CSV_ROW_COLORS["open"]
+            background, foreground = self._row_colors["open"]
         elif record.status in {"PAGO", "CANCELADO"}:
-            background, foreground = CSV_ROW_COLORS["closed"]
+            background, foreground = self._row_colors["closed"]
         else:
-            background, foreground = CSV_ROW_COLORS["default"]
+            background, foreground = self._row_colors["default"]
 
         for column_index in range(self.table.columnCount()):
             item = self.table.item(row_index, column_index)
@@ -616,6 +894,16 @@ class CsvPage(QWidget):
 
         self.cell_edited.emit(row_index, column_index, new_text, old_text)
 
+    def _emit_delete_row(self) -> None:
+        row_index = self.table.currentRow()
+        if row_index < 0:
+            return
+        self.delete_row_clicked.emit(row_index)
+
+    def _update_delete_button_state(self) -> None:
+        has_row = self.table.currentRow() >= 0 and self.table.rowCount() > 0
+        self.delete_row_button.setEnabled(has_row)
+
 
 class SendPage(QWidget):
     back_clicked = Signal()
@@ -624,6 +912,7 @@ class SendPage(QWidget):
     subject_changed = Signal(str)
     body_changed = Signal(str)
     selection_changed = Signal()
+    email_edited = Signal(int, str, str)
     select_all_eligible_clicked = Signal()
     clear_selection_clicked = Signal()
 
@@ -652,6 +941,7 @@ class SendPage(QWidget):
         self._updating_table = False
         self._is_busy = False
         self._logs_tab_visible = False
+        self._row_colors = THEME_SEND_ROW_COLORS[THEME_DARK]
         self._preset_templates: dict[str, tuple[str, str]] = {
             self.PRESET_FRIENDLY: (
                 "Lembrete amigavel - {cliente_nome} (ID {record_id})",
@@ -735,10 +1025,16 @@ class SendPage(QWidget):
         self.table.setColumnWidth(self.SEND_COL_CLIENTE, 180)
         self.table.setColumnWidth(self.SEND_COL_MOTIVO, 240)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+        )
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
-        self.table.setToolTip("Linhas cinza sao SKIP por regra e nao podem ser enviadas")
+        self.table.setToolTip(
+            "Linhas cinza sao SKIP por regra e nao podem ser enviadas. Duplo clique em email para editar."
+        )
         self.table.setAccessibleName("Tabela de envio com motivo de skip")
 
         self.subject_edit = QLineEdit()
@@ -903,6 +1199,7 @@ class SendPage(QWidget):
         self.template_body_edit.textChanged.connect(self._on_template_changed)
         self.template_preset_combo.currentIndexChanged.connect(lambda _: self._on_preset_changed())
         self.preview_client_combo.currentIndexChanged.connect(lambda _: self._update_preview())
+        self.table.cellDoubleClicked.connect(self._on_table_cell_double_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
         self.per_client_checkbox.toggled.connect(self._on_mode_toggled)
 
@@ -1024,6 +1321,20 @@ class SendPage(QWidget):
     def set_send_enabled(self, enabled: bool) -> None:
         self.send_button.setEnabled(enabled and not self._is_busy)
 
+    def set_row_colors(self, row_colors: dict[str, tuple[QColor, QColor]]) -> None:
+        self._row_colors = row_colors
+
+        if not self._records:
+            return
+
+        for row_index, record in enumerate(self._records):
+            decision = evaluate_record(record, cooldown_days=3)
+            eligible = bool(record.is_valid and decision.eligible and (record.email or "").strip())
+            if eligible:
+                self._apply_eligible_style(row_index)
+            else:
+                self._apply_skip_style(row_index)
+
     def set_busy(self, busy: bool) -> None:
         self._is_busy = busy
         self.send_button.setEnabled(not busy)
@@ -1096,7 +1407,11 @@ class SendPage(QWidget):
 
         for column_index, value in enumerate(row_values, start=1):
             item = QTableWidgetItem(value)
-            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            item.setData(Qt.UserRole, value)
+            if column_index == self.SEND_COL_EMAIL:
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
+            else:
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self.table.setItem(row_index, column_index, item)
 
         if eligible:
@@ -1105,8 +1420,7 @@ class SendPage(QWidget):
             self._apply_skip_style(row_index)
 
     def _apply_eligible_style(self, row_index: int) -> None:
-        background = QColor("#2b2f38")
-        foreground = QColor("#e2e8f0")
+        background, foreground = self._row_colors["eligible"]
 
         for column_index in range(self.table.columnCount()):
             item = self.table.item(row_index, column_index)
@@ -1116,8 +1430,7 @@ class SendPage(QWidget):
             item.setForeground(foreground)
 
     def _apply_skip_style(self, row_index: int) -> None:
-        background = QColor("#3a3f4a")
-        foreground = QColor("#cbd5e1")
+        background, foreground = self._row_colors["skip"]
 
         for column_index in range(self.table.columnCount()):
             item = self.table.item(row_index, column_index)
@@ -1130,8 +1443,70 @@ class SendPage(QWidget):
         if self._updating_table:
             return
 
-        if item.column() != self.SEND_COL_SELECT:
+        if item.column() == self.SEND_COL_SELECT:
+            self._update_selected_label()
+            self._refresh_preview_candidates()
+            self._update_preview()
+            self.selection_changed.emit()
             return
+
+        if item.column() != self.SEND_COL_EMAIL:
+            return
+
+        old_text = str(item.data(Qt.UserRole) or "")
+        new_text = item.text()
+        if new_text == old_text:
+            return
+
+        self.email_edited.emit(item.row(), new_text, old_text)
+
+    def _on_table_cell_double_clicked(self, row_index: int, column_index: int) -> None:
+        if column_index != self.SEND_COL_EMAIL:
+            return
+
+        item = self.table.item(row_index, column_index)
+        if item is None:
+            return
+
+        self.table.editItem(item)
+
+    def record_for_row(self, row_index: int) -> ClientRecord | None:
+        if row_index < 0 or row_index >= len(self._records):
+            return None
+        return self._records[row_index]
+
+    def revert_email_cell(self, row_index: int, old_text: str) -> None:
+        self._updating_table = True
+        try:
+            item = self.table.item(row_index, self.SEND_COL_EMAIL)
+            if item is None:
+                return
+            item.setText(old_text)
+            item.setData(Qt.UserRole, old_text)
+        finally:
+            self._updating_table = False
+
+    def commit_email_cell(self, row_index: int, canonical_text: str) -> None:
+        self._updating_table = True
+        try:
+            item = self.table.item(row_index, self.SEND_COL_EMAIL)
+            if item is None:
+                return
+            item.setText(canonical_text)
+            item.setData(Qt.UserRole, canonical_text)
+        finally:
+            self._updating_table = False
+
+    def refresh_row(self, row_index: int) -> None:
+        record = self.record_for_row(row_index)
+        if record is None:
+            return
+
+        self._updating_table = True
+        try:
+            self._render_row(row_index, record)
+        finally:
+            self._updating_table = False
 
         self._update_selected_label()
         self._refresh_preview_candidates()
@@ -1359,8 +1734,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MVP Gmail RPA")
         self.resize(1260, 820)
         self.setMinimumSize(1024, 700)
-        self.setStyleSheet(APP_STYLESHEET)
-        self.statusBar().showMessage("Pronto")
+        self._settings = QSettings()
+        self.current_theme = self._load_theme_setting()
 
         self.logged_in = False
         self.records_loaded = False
@@ -1385,8 +1760,14 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.csv_page)
         self.stack.addWidget(self.send_page)
 
+        self._setup_settings_toolbar()
         self._connect_signals()
         self._setup_shortcuts()
+
+        self.login_page.set_profile_dir(self._load_profile_dir_setting())
+        self.login_page.set_headless_mode(self._load_headless_setting())
+        self._apply_theme(self.current_theme)
+        self.statusBar().showMessage("Pronto")
 
     def _setup_shortcuts(self) -> None:
         self.shortcut_load_csv = QShortcut(QKeySequence("Ctrl+L"), self)
@@ -1415,6 +1796,8 @@ class MainWindow(QMainWindow):
         self.csv_page.save_csv_clicked.connect(self._save_csv)
         self.csv_page.select_all_valid_clicked.connect(self._select_all_valid_csv)
         self.csv_page.clear_selection_clicked.connect(self._clear_csv_selection)
+        self.csv_page.add_row_clicked.connect(self._add_csv_row)
+        self.csv_page.delete_row_clicked.connect(self._delete_csv_row)
         self.csv_page.next_clicked.connect(self._go_to_send)
         self.csv_page.cell_edited.connect(self._on_csv_cell_edited)
         self.csv_page.selection_toggled.connect(self._on_csv_selection_toggled)
@@ -1424,9 +1807,157 @@ class MainWindow(QMainWindow):
         self.send_page.subject_changed.connect(self._on_subject_changed)
         self.send_page.body_changed.connect(self._on_body_changed)
         self.send_page.selection_changed.connect(self._refresh_send_state)
+        self.send_page.email_edited.connect(self._on_send_email_edited)
         self.send_page.select_all_eligible_clicked.connect(self._select_all_send)
         self.send_page.clear_selection_clicked.connect(self._clear_send_selection)
         self.send_page.send_clicked.connect(self._send_emails)
+
+    def _setup_settings_toolbar(self) -> None:
+        toolbar = self.addToolBar("Configuracoes")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+
+        spacer = QWidget(self)
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
+
+        settings_button = QToolButton(self)
+        settings_button.setObjectName("settingsButton")
+        settings_button.setFixedSize(36, 36)
+        settings_button.setIconSize(QSize(20, 20))
+        settings_button.setToolTip("Abrir configuracoes")
+        settings_button.clicked.connect(self._open_settings_modal)
+
+        toolbar.addWidget(settings_button)
+
+        self.settings_toolbar = toolbar
+        self.settings_button = settings_button
+        self._apply_settings_icon()
+
+    def _build_settings_icon(self) -> QIcon:
+        if qta is not None:
+            icon_color = "#e2e8f0" if self.current_theme == THEME_DARK else "#1f2937"
+            try:
+                return qta.icon("fa5s.cog", color=icon_color)
+            except Exception:
+                pass
+
+        fallback_icon = QIcon.fromTheme("preferences-system")
+        if fallback_icon.isNull():
+            fallback_icon = self.style().standardIcon(QStyle.SP_FileDialogDetailedView)
+        return fallback_icon
+
+    def _apply_settings_icon(self) -> None:
+        self.settings_button.setIcon(self._build_settings_icon())
+
+    def _open_settings_modal(self) -> None:
+        dialog = SettingsDialog(
+            current_profile_dir=self.login_page.get_profile_dir(),
+            current_theme=self.current_theme,
+            current_headless=self.login_page.get_headless_mode(),
+            parent=self,
+        )
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        new_profile_dir = dialog.selected_profile_dir()
+        self.login_page.set_profile_dir(new_profile_dir)
+        self._save_profile_dir_setting(new_profile_dir)
+
+        new_headless = dialog.selected_headless_mode()
+        self.login_page.set_headless_mode(new_headless)
+        self._save_headless_setting(new_headless)
+
+        selected_theme = dialog.selected_theme()
+        if selected_theme != self.current_theme:
+            self._apply_theme(selected_theme)
+            self._save_theme_setting(selected_theme)
+
+        if dialog.logout_requested():
+            self._request_logout_from_settings()
+
+    def _load_profile_dir_setting(self) -> str:
+        saved_profile_dir = str(self._settings.value(SETTINGS_KEY_PROFILE_DIR, "", type=str) or "").strip()
+        if saved_profile_dir:
+            return saved_profile_dir
+        return str(Path("playwright-profile").resolve())
+
+    def _save_profile_dir_setting(self, profile_dir: str) -> None:
+        self._settings.setValue(SETTINGS_KEY_PROFILE_DIR, profile_dir)
+
+    def _load_headless_setting(self) -> bool:
+        return bool(self._settings.value(SETTINGS_KEY_HEADLESS, False, type=bool))
+
+    def _save_headless_setting(self, enabled: bool) -> None:
+        self._settings.setValue(SETTINGS_KEY_HEADLESS, bool(enabled))
+
+    def _load_theme_setting(self) -> str:
+        saved_theme = str(self._settings.value(SETTINGS_KEY_THEME, THEME_DARK, type=str) or THEME_DARK)
+        return normalize_theme(saved_theme)
+
+    def _save_theme_setting(self, theme_name: str) -> None:
+        self._settings.setValue(SETTINGS_KEY_THEME, normalize_theme(theme_name))
+
+    def _apply_theme(self, theme_name: str) -> None:
+        normalized_theme = normalize_theme(theme_name)
+        self.current_theme = normalized_theme
+        self.setStyleSheet(THEME_STYLESHEETS[normalized_theme])
+        self._apply_settings_icon()
+
+        self.csv_page.set_row_colors(THEME_CSV_ROW_COLORS[normalized_theme])
+        self.send_page.set_row_colors(THEME_SEND_ROW_COLORS[normalized_theme])
+
+        if self.records:
+            self.csv_page.populate_records(self.records)
+
+    def _request_logout_from_settings(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(self, "Aguarde", "Ja existe uma acao em andamento.")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Confirmar logout",
+            "Deseja limpar os cookies do perfil atual e invalidar a sessao Gmail?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        self.login_page.set_busy(True)
+        self.login_page.set_session_valid(False)
+        self.login_page.set_status("Executando logout Gmail...")
+        self.logged_in = False
+        self._refresh_send_state()
+
+        sender = GmailPlaywrightSender(
+            user_data_dir=self.login_page.get_profile_dir(),
+            headless=self.login_page.get_headless_mode(),
+        )
+        self._start_worker(
+            fn=sender.logout_session,
+            on_success=self._on_logout_success,
+            on_error=self._on_logout_error,
+            on_finish=lambda: self.login_page.set_busy(False),
+        )
+
+    def _on_logout_success(self, _: object) -> None:
+        self.logged_in = False
+        self.login_page.set_session_valid(False)
+        self.login_page.set_status("Logout concluido. Faca login novamente.")
+        self.statusBar().showMessage("Logout Gmail concluido", 5000)
+        QMessageBox.information(self, "Logout concluido", "Sessao Gmail removida com sucesso.")
+        self._refresh_send_state()
+
+    def _on_logout_error(self, error_message: str) -> None:
+        self.logged_in = False
+        self.login_page.set_session_valid(False)
+        self.login_page.set_status("Falha ao executar logout Gmail.")
+        self.statusBar().showMessage("Falha no logout Gmail", 5000)
+        QMessageBox.critical(self, "Erro no logout", f"Nao foi possivel executar logout: {error_message}")
+        self._refresh_send_state()
 
     def _open_gmail_for_login(self, profile_dir: str, headless: bool) -> None:
         self.login_page.set_status("Abrindo Gmail para login manual...")
@@ -1563,6 +2094,71 @@ class MainWindow(QMainWindow):
         self.csv_page.populate_records(self.records)
         self._refresh_csv_state()
 
+    def _add_csv_row(self) -> None:
+        numeric_ids = [int(record.id) for record in self.records if record.id.isdigit()]
+        next_id = str(max(numeric_ids, default=0) + 1)
+
+        new_record = ClientRecord(
+            id=next_id,
+            cliente_nome=None,
+            email=None,
+            status="ABERTO",
+            valor=None,
+            vencimento=None,
+            ultima_cobranca=None,
+            observacao_erro="",
+            is_valid=False,
+            selected=False,
+        )
+
+        reasons = validate_record_fields(new_record.email, new_record.status, new_record.valor)
+        new_record.is_valid = len(reasons) == 0
+        new_record.observacao_erro = "; ".join(reasons)
+        new_record.selected = bool(new_record.is_valid and new_record.status == "ABERTO")
+
+        self.records.append(new_record)
+        self.records_loaded = len(self.records) > 0
+
+        self.csv_page.populate_records(self.records)
+
+        new_row_index = len(self.records) - 1
+        self.csv_page.table.selectRow(new_row_index)
+        self.csv_page.table.setCurrentCell(new_row_index, COL_CLIENTE)
+
+        self._refresh_csv_state()
+        self.statusBar().showMessage("Linha adicionada. Preencha os campos obrigatorios.", 5000)
+
+    def _delete_csv_row(self, row_index: int) -> None:
+        if row_index < 0 or row_index >= len(self.records):
+            return
+
+        record = self.records[row_index]
+        email = (record.email or "").strip()
+        descriptor = f"ID {record.id}"
+        if email:
+            descriptor = f"ID {record.id} ({email})"
+
+        confirm = QMessageBox.question(
+            self,
+            "Confirmar exclusao",
+            f"Deseja deletar o registro {descriptor}?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        self.records.pop(row_index)
+        self.records_loaded = len(self.records) > 0
+        self.csv_page.populate_records(self.records)
+
+        if self.records:
+            new_row_index = min(row_index, len(self.records) - 1)
+            self.csv_page.table.selectRow(new_row_index)
+
+        self._refresh_csv_state()
+        self.statusBar().showMessage("Linha deletada com sucesso.", 5000)
+
     def _on_csv_selection_toggled(self, row_index: int, checked: bool) -> None:
         if row_index < 0 or row_index >= len(self.records):
             return
@@ -1618,6 +2214,15 @@ class MainWindow(QMainWindow):
                 return
             record.valor = valor_value
             self.csv_page.commit_cell(row_index, column_index, format_valor(record.valor))
+
+        elif column_index == COL_VENCIMENTO:
+            vencimento_value, vencimento_error = normalize_due_date_for_edit(candidate)
+            if vencimento_error is not None:
+                QMessageBox.warning(self, "Vencimento invalido", vencimento_error)
+                self.csv_page.revert_cell(row_index, column_index, old_text)
+                return
+            record.vencimento = vencimento_value
+            self.csv_page.commit_cell(row_index, column_index, record.vencimento or "")
 
         else:
             return
@@ -1686,6 +2291,24 @@ class MainWindow(QMainWindow):
         self.body = text.strip()
         self._refresh_send_state()
 
+    def _on_send_email_edited(self, row_index: int, new_text: str, old_text: str) -> None:
+        record = self.send_page.record_for_row(row_index)
+        if record is None:
+            return
+
+        email_value = normalize_text(new_text)
+        if not is_valid_email(email_value):
+            QMessageBox.warning(self, "Email invalido", "Informe um email valido para continuar.")
+            self.send_page.revert_email_cell(row_index, old_text)
+            return
+
+        record.email = email_value
+        self.send_page.commit_email_cell(row_index, record.email or "")
+        self.send_page.refresh_row(row_index)
+
+        self.csv_page.populate_records(self.records)
+        self._refresh_csv_state()
+
     def _send_emails(self, subject: str, body: str, per_client: bool) -> None:
         records = self.send_page.selected_records()
         if not records:
@@ -1718,7 +2341,7 @@ class MainWindow(QMainWindow):
 
         sender = GmailPlaywrightSender(
             user_data_dir=self.login_page.get_profile_dir(),
-            headless=self.login_page.headless_checkbox.isChecked(),
+            headless=self.login_page.get_headless_mode(),
         )
 
         self.send_page.clear_logs()
